@@ -1,114 +1,145 @@
 # HLSink
 
-HLS / DASH 视频下载器。Go + Wails v3 + 纯静态前端（无 npm、无 Vite、无打包器）。
+一个 Windows 上的视频下载器。浏览器里能播的 HLS / DASH 视频，点一下扩展把链接丢过来，它负责下完、合并、可选转码，最后落到你指定的文件夹。
 
-## 功能
+名字是 HLS + Sink（顺手倒进槽里）。
 
-- 浏览器扩展嗅探 HLS / DASH，发送到本地 `127.0.0.1:18752`
-- N_m3u8DL-RE 优先下载，遇到 Cloudflare 自动降级 yt-dlp
-- 下载后可选 NVENC 硬编转 HEVC（体积减半）
-- 任务暂停 / 续传 / 物理删除（含精确产物清理）
-- 迷你模式（置顶小窗）
-- 外部工具路径可配置，不写死
-- 所有运行期产物收敛在 exe 同级 `data/`，不污染 C 盘
+## 它到底在干什么
+
+1. 浏览器扩展盯着页面里的网络请求，看到 `.m3u8` / `.mpd` 就记下来，连 cookie、referer 一起带上——很多站不带这些下不动
+2. 主程序拿到链接，调 **N_m3u8DL-RE** 去下分片
+3. 被 Cloudflare 挡住的时候，换 **yt-dlp** 再试一次
+4. 下完可以选转 HEVC，用显卡硬编，体积差不多减半
+5. 成品挪到设置里的下载目录，重名自动加 (1)(2)，不覆盖
+
+下载、合并、转码全是别人的工具，这个项目只负责把它们串起来，加一个自己画的界面。
+
+## 用之前得自己准备三个工具
+
+程序里不带引擎，这三个自己下好放进来（放 exe 旁边的 `tools/`、`deps/`、`bin/` 都行，也可以在设置里直接指路径）：
+
+| 工具 | 管什么 | 缺了会怎样 |
+|---|---|---|
+| `N_m3u8DL-RE.exe` | HLS / DASH 分片下载 | 下不了，会明确提示你没找到 |
+| `yt-dlp.exe` | 网页解析、Cloudflare 兜底 | 只能下直链，网页地址没法处理 |
+| `ffmpeg.exe` | 合并音视频、转 HEVC | 不能转码；yt-dlp 那条分支也用不了 |
+
+三个都能留空自动探测，顺序是 exe 旁的 `tools` → `deps` → `bin`，最后查系统 PATH。
+
+## 怎么用
+
+1. 打开 `HLSink.exe`，在设置里选好下载目录（默认是 `用户目录\Downloads`）
+2. Edge / Chrome 装 `extension/` 里的扩展（开发者模式 → 加载解压的扩展）
+3. 在网页上播视频，点扩展图标，它会列出嗅到的流，选一个丢给程序
+
+不想装扩展也行，主界面的「添加链接」可以直接粘地址：网页地址、`.m3u8`、`.mpd` 都吃。
+
+## 编译
+
+```bash
+go build -tags desktop,production -ldflags="-H windowsgui -w -s" -o build/bin/HLSink.exe .
+```
+
+`-H windowsgui` 去掉控制台黑框，`-w -s` 去符号表。
+
+依赖都是公开模块，`go mod download` 就行。本机已经有 Go 模块缓存的话可以指过去省下载：
+
+```bash
+export GOPATH=/path/to/go_path
+export GOMODCACHE="$GOPATH/pkg/mod"
+export GOCACHE=/path/to/go_cache
+export GOPROXY=off GOSUMDB=off
+```
+
+有个诊断开关，能打印当前 exe 里绑定的真实名字（前端调用名必须和它一致）：
+
+```bash
+./build/bin/HLSink.exe --print-fqn
+# PkgPath="main" TypeName="App"
+```
+
+## 文件都放哪
+
+便携的。运行期产生的东西全在 exe 同级的 `data/` 里，不往 C 盘塞：
+
+- `data/config.json` —— 你的设置
+- `data/work/<任务ID>/` —— 分片、临时文件、日志
+- `data/webview2/` —— WebView2 自己的缓存
+
+设置页的「清理缓存」只删 `data/work`，不碰配置，也不碰你已经下好的视频。有任务在跑时会拒绝清理，免得删掉正在写的分片。
+
+整个文件夹可以拷到别的机器直接用。
+
+## 改代码的话看这里
+
+前端不走 Wails 的代码生成，直接用它的运行时，所以没有 npm、没有 node_modules、没有构建步骤。`frontend/dist` 里的文件由 `go:embed` 打进 exe，改完重新 `go build` 就行。
+
+```js
+const { Call, Events, Window } = await import('./vendor/wails-runtime.js');
+
+const APP_NS = 'main.App.';
+const call = (method, ...args) => Call.ByName(APP_NS + method, ...args);
+
+call('ListTasks');
+call('PauseTask', id);
+
+Events.On('task-updated', (ev) => console.log(ev.data));
+
+Window.Minimise();
+Window.SetSize(400, 150);
+```
+
+加后端方法只需要在 `app.js` 的 `AppApi` 里补一行，不用生成绑定。
+
+`APP_NS` 这里有个坑：`go build` 出 exe 时 `package main` 的包路径是 `main`，所以是 `main.App.Xxx`；但在 `go test` 里同一个类型会变成模块名 `hlsink`。两个不一样，别拿测试打印出来的名字当准，用 `--print-fqn` 问 exe 自己。
 
 ## 目录
 
 ```
 HLSink/
-├── main.go                 # Wails v3 入口：应用 + 无边框窗口 + 单实例
-├── task.go                 # App / Settings / 任务生命周期 / 清缓存
-├── task_store.go           # 任务状态机与事件广播
-├── task_runner.go          # RE / yt-dlp / ffmpeg 调度与进度解析
-├── task_server.go          # 本地 HTTP 接口（扩展用）
-├── task_paths.go           # 路径安全 / 发布 / 删除 / data 目录
-├── task_stream.go          # 源格式判定
-├── protocol_windows.go     # hlsink:// 协议注册
-├── frontend/dist/          # 纯静态前端（直接 go:embed）
+├── main.go                 # 入口：应用、无边框窗口、单实例
+├── task.go                 # App / 设置 / 任务生命周期 / 清缓存
+├── task_store.go           # 状态机与事件广播
+├── task_runner.go          # 调度 RE / yt-dlp / ffmpeg，解析进度
+├── task_server.go          # 给扩展用的本地 HTTP 接口
+├── task_paths.go           # 路径安全、发布、删除
+├── task_stream.go          # 判断是 hls / dash / 网页
+├── protocol_windows.go     # 注册 hlsink:// 协议
+├── frontend/dist/          # 前端源码（就是发布文件，没有编译步骤）
 │   ├── index.html
 │   ├── app.js
-│   ├── app.css
-│   ├── style.css
-│   ├── vendor/wails-runtime.js  # Wails 运行时（随前端打包，不依赖内置路由）
+│   ├── app.css / style.css
+│   ├── vendor/wails-runtime.js
 │   └── assets/fonts/
 ├── extension/              # Chromium 扩展
-└── build/bin/HLSink.exe    # 构建产物
+└── build/                  # 图标与清单
 ```
-
-## 构建
-
-```bash
-# 可选：指向本机已有的 Go 模块缓存（路径换成你自己的）
-export GOPATH=/path/to/go_path
-export GOMODCACHE="$GOPATH/pkg/mod"
-export GOCACHE=/path/to/go_cache
-export GOPROXY=off GOSUMDB=off
-
-go build -tags desktop,production -ldflags="-H windowsgui -w -s" -o build/bin/HLSink.exe .
-```
-
-`-H windowsgui` 去掉控制台黑框；`-w -s` 去符号表。
-
-## 数据与缓存
-
-全部在 **exe 同级 `data/`**（exe 目录不可写时回退用户配置目录）：
-
-- `data/config.json` —— 用户设置（任务、下载目录、工具路径）
-- `data/work/<任务ID>/` —— 分片、临时文件、日志
-- `data/webview2/` —— WebView2 缓存
-
-设置页「清理缓存」只删 `data/work`，**不会**动 `config.json` 和你的成品视频。有任务运行时会拒绝清理。
-
-## 外部工具
-
-三个工具都可留空（自动检测）：会依次查找 exe 旁 `tools/`、`deps/`、`bin/`，再查系统 `PATH`。
-
-- `N_m3u8DL-RE.exe` —— HLS / DASH 分片下载
-- `yt-dlp.exe` —— 网页解析 / CF 降级
-- `ffmpeg.exe` —— 转码与 mux（可填 exe 路径或所在目录）
-
-## 前端调用约定
-
-前端不走生成的 bindings，直接用 Wails v3 内置运行时：
-
-```js
-const { Call, Events, Window } = await import('./vendor/wails-runtime.js');
-
-// 命名空间固定为 main.App（go build 出的 main 包 PkgPath 就是 main）
-Call.ByName('main.App.ListTasks');
-Call.ByName('main.App.PauseTask', id);
-
-// 事件
-Events.On('task-updated', (ev) => console.log(ev.data));
-
-// 窗口
-Window.Minimise();
-Window.SetSize(400, 150);
-```
-
-因此新增后端方法时，只要在 `app.js` 的 `AppApi` 里补一行即可，不需要重新生成绑定。
-
-命名空间必须是 `main.App.`。注意 `go test` 里同一个类型的 PkgPath 会变成模块名，
-与 exe 不同——别拿测试结果当准，用 `--print-fqn` 确认。
 
 ## 图标
 
-- 母版：`build/icon-source.png`（Hlink 字标）
-- 应用图标：`build/appicon.png`（1024×1024，白字标 + 黑色圆角底）
-- Windows 图标：`build/windows/icon.ico`（256/128/64/48/32/24/16；16/24 单独放大了字标）
-- 清单：`build/windows/wails.exe.manifest`
-- 资源对象：`wails_windows_amd64.syso`（Go 构建时自动链接，负责把图标写进 exe）
+- `build/icon-source.png` —— 原始字标
+- `build/appicon.png` —— 1024×1024 成品
+- `build/windows/icon.ico` —— 256/128/64/48/32/24/16 七个尺寸
+- `wails_windows_amd64.syso` —— 真正让图标进 exe 的东西
 
-换图标时，替换 `build/icon-source.png` 后重新生成：
+只放 ico 不生成 syso 的话，exe 里还是 Go 的默认图标。换图标的流程：
 
 ```bash
-# 1024 母版 + 多尺寸 ico（脚本见项目历史，或按 README 尺寸规范自行导出）
 wails3 generate icons -input build/appicon.png -sizes 256,128,64,48,32,24,16 \
   -windowsfilename build/windows/icon.ico
 
-# 重新生成资源对象（必须有，否则 exe 里还是默认图标）
 wails3 generate syso -arch amd64 \
   -icon build/windows/icon.ico \
   -manifest build/windows/wails.exe.manifest \
   -out wails_windows_amd64.syso
 ```
+
+## 几个实话
+
+- **只能下能拿到直连地址的视频**。DRM 加密的（Netflix、Disney+ 那类）搞不定，也不打算搞
+- **线程数别一味开大**。默认 32，有些站直接 429，调小反而更快
+- **转码要 NVIDIA 显卡**。用的是 `hevc_nvenc`，没有 N 卡就在设置里关掉，只下载不转
+- **暂停靠杀进程**，所以是分片级续传，不是字节级
+- **删除是物理删除**，连成品一起删，删完不可恢复，删除前会确认
+
+用出问题的时候，日志在 `data/work/<任务ID>/logs/`。
