@@ -1,0 +1,8 @@
+# 统一换行，避免 Windows/Linux 协作时整文件 diff
+* text=auto eol=lf
+
+# 二进制资源不要做换行/文本处理
+*.png   binary
+*.ico   binary
+*.woff2 binary
+*.syso  binary
