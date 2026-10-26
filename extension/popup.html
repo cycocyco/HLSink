@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    :root {
+      --bg: #0b0c0d;
+      --surface: #101113;
+      --card: #151618;
+      --raised: #1e2023;
+      --border: #292b2f;
+      --border-strong: #3a3d42;
+      --fg: #f3f4f5;
+      --fg-secondary: #a6a9af;
+      --fg-muted: #777b81;
+      --white: #e4e6e9;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { background: var(--bg); }
+    body {
+      width: 400px;
+      max-height: 600px;
+      background: var(--bg);
+      color: var(--fg);
+      font: 13px "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+      overflow: hidden;
+      user-select: none;
+    }
+    button, input { font: inherit; }
+    button { color: inherit; }
+    button:focus-visible, input:focus-visible { outline: 1px solid var(--fg-secondary); outline-offset: 2px; }
+    ::-webkit-scrollbar { width: 8px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #303338; border-radius: 8px; border: 2px solid var(--bg); }
+
+    header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 54px;
+      padding: 9px 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .brand-mark {
+      width: 22px; height: 22px;
+      border: 1px solid var(--border-strong);
+      border-radius: 6px;
+      position: relative;
+      flex-shrink: 0;
+    }
+    .brand-mark::after {
+      content: "";
+      position: absolute;
+      left: 6px; right: 6px; top: 8px;
+      height: 1px;
+      background: var(--fg-secondary);
+      box-shadow: 0 4px 0 var(--fg-muted);
+    }
+    .brand-copy { min-width: 0; }
+    .brand { font-size: 14px; font-weight: 500; line-height: 1.3; }
+    .brand-sub { color: var(--fg-muted); font-size: 10px; margin-top: 1px; }
+    .actions { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+    .actions button {
+      background: none;
+      border: 0;
+      color: var(--fg-muted);
+      border-radius: 6px;
+      padding: 6px 8px;
+      cursor: pointer;
+      font-size: 11px;
+    }
+    .actions button:hover { color: var(--fg); background: var(--raised); }
+
+    .page-summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 11px 16px 9px;
+      color: var(--fg-secondary);
+      font-size: 11px;
+    }
+    .summary-hint { color: var(--fg-muted); white-space: nowrap; }
+
+    .list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 0 16px 12px;
+      max-height: 384px;
+      overflow-y: auto;
+    }
+    .empty { color: var(--fg-muted); text-align: center; padding: 44px 0 38px; line-height: 1.8; }
+    .empty-mark {
+      width: 30px; height: 38px;
+      border: 1px solid #3e4147;
+      border-radius: 5px;
+      margin: 0 auto 15px;
+      position: relative;
+      opacity: 0.85;
+    }
+    .empty-mark::after {
+      content: "";
+      position: absolute;
+      left: 7px; right: 7px; bottom: 8px;
+      height: 1px;
+      background: #3e4147;
+    }
+    .empty-title { color: var(--fg-secondary); font-size: 12px; }
+    .empty-sub { margin-top: 3px; font-size: 11px; color: var(--fg-muted); }
+    .page-send {
+      margin-top: 14px;
+      padding: 6px 12px;
+      border: 1px solid var(--border-strong);
+      border-radius: 7px;
+      background: transparent;
+      color: var(--fg);
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .page-send:hover { background: var(--raised); }
+    .page-send:disabled { opacity: .5; cursor: default; }
+
+    .item {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      padding: 11px 12px;
+      cursor: pointer;
+      transition: border-color .14s, background .14s;
+    }
+    .item:hover { border-color: var(--border-strong); }
+    .item.is-selected { background: #191b1e; border-color: #404349; }
+    .item input[type="checkbox"] {
+      width: 13px; height: 13px;
+      margin-top: 2px;
+      accent-color: var(--white);
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .item .info { flex: 1; min-width: 0; }
+    .item .name {
+      font-size: 12px;
+      font-weight: 500;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .item .url {
+      color: var(--fg-muted);
+      font-size: 10px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      margin-top: 3px;
+      user-select: text;
+    }
+    .tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; min-height: 0; }
+    .tag {
+      display: inline-block;
+      font-size: 10px;
+      line-height: 16px;
+      padding: 0 6px;
+      border-radius: 4px;
+      border: 1px solid var(--border-strong);
+      color: var(--fg-muted);
+      background: transparent;
+    }
+    .tag.is-format { color: var(--fg-secondary); }
+
+    .bottom-panel {
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+      padding: 8px 16px 11px;
+    }
+    #tip {
+      min-height: 15px;
+      color: var(--fg-muted);
+      font-size: 11px;
+      line-height: 1.45;
+      margin-bottom: 7px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #tip.offline { color: #c9cbd0; }
+    #tip.offline::before { content: "! "; color: var(--fg-secondary); }
+    .hide { display: none !important; }
+    .launch-app {
+      width: 100%;
+      margin: 0 0 8px;
+      padding: 7px 12px;
+      border: 1px solid var(--white);
+      border-radius: 7px;
+      background: var(--white);
+      color: #111214;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    .launch-app:hover { background: #f3f4f5; }
+    .launch-app:disabled { opacity: .5; cursor: default; }
+    footer { display: flex; gap: 8px; align-items: center; }
+    footer input {
+      flex: 1;
+      min-width: 0;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--fg);
+      border-radius: 7px;
+      padding: 7px 10px;
+      font-size: 12px;
+      outline: none;
+    }
+    footer input:focus { border-color: var(--border-strong); }
+    footer input::placeholder { color: var(--fg-muted); }
+    footer button.primary {
+      background: var(--white);
+      border: 1px solid var(--white);
+      color: #111214;
+      border-radius: 7px;
+      padding: 7px 14px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+    footer button.primary:hover { background: #f3f4f5; }
+    footer button.primary:disabled { opacity: .35; cursor: not-allowed; background: var(--white); }
+    @media (prefers-reduced-motion: reduce) { .item { transition: none; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand-mark" aria-hidden="true"></div>
+    <div class="brand-copy">
+      <div class="brand">HLSink</div>
+      <div class="brand-sub">扩展嗅探</div>
+    </div>
+    <div class="actions">
+      <button id="refresh" type="button">刷新</button>
+      <button id="clear" type="button">清空</button>
+    </div>
+  </header>
+
+  <div class="page-summary">
+    <span id="summary">本页嗅探结果</span>
+    <span id="selection-summary" class="summary-hint">勾选后发送</span>
+  </div>
+
+  <div class="list" id="list">
+    <div class="empty">
+      <div class="empty-mark" aria-hidden="true"></div>
+      <div class="empty-title">本页未发现视频流</div>
+      <div class="empty-sub">播放一下视频再刷新试试</div>
+    </div>
+  </div>
+
+  <div class="bottom-panel">
+    <div id="tip"></div>
+    <button id="launch-app" class="launch-app hide" type="button" title="首次使用请先手动运行一次新版HLSink；点击后 Chrome 可能询问是否允许打开外部应用">启动 HLSink</button>
+    <footer>
+      <input id="filename" type="text" placeholder="文件名（可选，单选时生效）" autocomplete="off" />
+      <button id="send" class="primary" type="button">发送任务</button>
+    </footer>
+  </div>
+
+  <script src="js/common.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

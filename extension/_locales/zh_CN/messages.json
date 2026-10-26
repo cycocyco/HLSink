@@ -1,0 +1,8 @@
+{
+  "appName": {
+    "message": "HLSink"
+  },
+  "desc": {
+    "message": "M3U8 嗅探 + 发送到本地HLSink下载器"
+  }
+}

@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HLSink</title>
+  <link rel="stylesheet" href="./style.css" />
+  <link rel="stylesheet" href="./app.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="brand-block">
+        <span class="brand">HLSink</span>
+        <span id="server-text" class="server-pill">检测中</span>
+      </div>
+      <nav class="tabs" aria-label="主导航">
+        <button class="tab active" data-tab="tasks" type="button">下载</button>
+        <button class="tab" data-tab="settings" type="button">设置</button>
+      </nav>
+      <div class="topbar-right">
+        <button id="toggle-mini" class="toolbar-icon" type="button" title="切换到迷你模式" aria-label="切换到迷你模式">
+          <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><rect x="1" y="3" width="12" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M4 6h6M4 8.5h4" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+        </button>
+        <div class="win-btns">
+          <button id="win-min" class="win-btn" type="button" title="最小化" aria-label="最小化"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M0 5h10" stroke="currentColor" stroke-width="1"/></svg></button>
+          <button id="win-close" class="win-btn win-close" type="button" title="关闭" aria-label="关闭"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M0 0l10 10M10 0L0 10" stroke="currentColor" stroke-width="1"/></svg></button>
+        </div>
+      </div>
+    </header>
+
+    <main id="page-tasks" class="page active">
+      <div class="task-toolbar">
+        <label class="search-shell" for="search">
+          <svg width="13" height="13" viewBox="0 0 13 13" aria-hidden="true"><circle cx="5.5" cy="5.5" r="4" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M8.7 8.7L12 12" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+          <input id="search" class="search" type="search" placeholder="搜索任务" autocomplete="off" />
+        </label>
+        <div class="filters" role="group" aria-label="任务筛选">
+          <button class="filter active" type="button" data-filter="all">全部 <span id="filter-count-all">0</span></button>
+          <button class="filter" type="button" data-filter="active">进行中 <span id="filter-count-active">0</span></button>
+          <button class="filter" type="button" data-filter="done">已完成 <span id="filter-count-done">0</span></button>
+          <button class="filter" type="button" data-filter="failed">失败 <span id="filter-count-failed">0</span></button>
+        </div>
+      </div>
+
+      <div class="task-summary">
+        <span id="task-summary">暂无任务</span>
+        <span id="task-summary-sub" class="summary-sub"></span>
+        <button id="add-link" class="summary-btn" type="button" title="粘贴视频网页地址或 DASH / HLS 地址">+ 链接</button>
+      </div>
+
+      <div class="list" id="task-list">
+        <div class="empty" id="empty-tip">
+          <div class="empty-mark" aria-hidden="true"></div>
+          <div class="empty-title">暂无任务</div>
+          <div class="empty-sub">在浏览器里播放视频，或点「+ 链接」粘贴网页地址</div>
+        </div>
+      </div>
+    </main>
+
+    <main id="page-settings" class="page">
+      <div class="section">
+        <div class="section-title">下载</div>
+        <div class="card">
+          <div class="row">
+            <div class="row-main">
+              <div class="row-title">保存目录</div>
+              <div class="row-sub">完成的视频会保存到这里</div>
+              <div class="dir-row">
+                <input id="download-dir" class="text-input" type="text" spellcheck="false" />
+                <button id="pick-dir" class="mini-btn" type="button" title="选择文件夹">选择</button>
+              </div>
+            </div>
+          </div>
+          <div class="row">
+            <div class="row-main">
+              <div class="row-title">下载线程数</div>
+              <div class="row-sub">默认 32；站点限速或频繁 429 时可降到 8～16</div>
+            </div>
+            <input id="thread-count" class="text-input num-input" type="number" min="1" max="64" step="1" inputmode="numeric" aria-label="下载线程数" />
+          </div>
+        </div>
+
+        <div class="section-title">输出</div>
+        <div class="card">
+          <div class="row">
+            <div class="row-main">
+              <div class="row-title">自动转码 HEVC</div>
+              <div class="row-sub">下载完成后用 NVENC 硬编转 H.265，体积减半画质基本不变</div>
+            </div>
+            <label class="switch"><input type="checkbox" id="hevc-toggle" /><span class="slider"></span></label>
+          </div>
+        </div>
+
+        <div class="section-title">扩展接口</div>
+        <div class="card">
+          <div class="row">
+            <div class="row-main">
+              <div class="row-title">本地监听</div>
+              <div class="row-sub"><code>127.0.0.1:18752</code> · 保持软件开启即可接收任务</div>
+            </div>
+            <span id="server-status-text" class="muted">检测中</span>
+          </div>
+        </div>
+
+        <div class="section-title">外部工具</div>
+        <div class="card">
+          <div class="row">
+            <div class="row-main">
+              <div class="row-title">N_m3u8DL-RE</div>
+              <div class="row-sub">留空自动检测（exe 旁 tools / deps / bin 或系统 PATH）</div>
+              <div class="dir-row">
+                <input id="re-path" class="text-input" type="text" spellcheck="false" placeholder="自动检测 N_m3u8DL-RE.exe" />
+                <button id="pick-re" class="mini-btn icon-btn" type="button" title="选择文件夹" aria-label="选择 RE 所在文件夹">
+                  <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.6 4.3c0-.6.5-1.1 1.1-1.1h3.1l1.3 1.4h6.2c.6 0 1.1.5 1.1 1.1v6.1c0 .6-.5 1.1-1.1 1.1H2.7c-.6 0-1.1-.5-1.1-1.1V4.3z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="row">
+            <div class="row-main">
+              <div class="row-title">yt-dlp</div>
+              <div class="row-sub">用于网页地址解析与 Cloudflare 降级下载</div>
+              <div class="dir-row">
+                <input id="ytdlp-path" class="text-input" type="text" spellcheck="false" placeholder="自动检测 yt-dlp.exe" />
+                <button id="pick-ytdlp" class="mini-btn icon-btn" type="button" title="选择文件夹" aria-label="选择 yt-dlp 所在文件夹">
+                  <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.6 4.3c0-.6.5-1.1 1.1-1.1h3.1l1.3 1.4h6.2c.6 0 1.1.5 1.1 1.1v6.1c0 .6-.5 1.1-1.1 1.1H2.7c-.6 0-1.1-.5-1.1-1.1V4.3z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="row">
+            <div class="row-main">
+              <div class="row-title">ffmpeg</div>
+              <div class="row-sub">可用于转码与 mux；填 exe 路径或所在目录</div>
+              <div class="dir-row">
+                <input id="ffmpeg-path" class="text-input" type="text" spellcheck="false" placeholder="自动检测 ffmpeg.exe" />
+                <button id="pick-ffmpeg" class="mini-btn icon-btn" type="button" title="选择文件夹" aria-label="选择 ffmpeg 所在文件夹">
+                  <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.6 4.3c0-.6.5-1.1 1.1-1.1h3.1l1.3 1.4h6.2c.6 0 1.1.5 1.1 1.1v6.1c0 .6-.5 1.1-1.1 1.1H2.7c-.6 0-1.1-.5-1.1-1.1V4.3z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-title">缓存</div>
+        <div class="card">
+          <div class="row">
+            <div class="row-main">
+              <div class="row-title">下载缓存</div>
+              <div class="row-sub" id="cache-info">用于存放分片与临时文件，清理不会删除你的成品和设置</div>
+            </div>
+            <button id="clear-cache" class="mini-btn" type="button" title="清理 data/work 缓存">清理缓存</button>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <div id="mini-view" class="mini-view hide">
+      <div class="mini-head">
+        <span id="mini-state-dot" class="mini-state-dot" aria-hidden="true"></span>
+        <span id="mini-status-label" class="mini-status-label">待机</span>
+        <span id="mini-queue" class="mini-queue"></span>
+        <button id="mini-pin" class="mini-icon-btn mini-pin is-on" type="button"
+                title="取消置顶" aria-label="置顶窗口" aria-pressed="true">
+          <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M6.1 2h3.8M6.7 2v4.3L4.4 8.5v1.1h7.2V8.5L9.3 6.3V2" fill="none"
+                  stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M8 9.6V14" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/>
+          </svg>
+        </button>
+      </div>
+      <div class="mini-title-row">
+        <button id="mini-prev" class="mini-cycle" type="button" title="上一个任务" aria-label="上一个任务">‹</button>
+        <span id="mini-title" class="mini-title">无任务</span>
+        <span id="mini-index" class="mini-index"></span>
+        <button id="mini-next" class="mini-cycle" type="button" title="下一个任务" aria-label="下一个任务">›</button>
+      </div>
+      <div class="mini-track"><div id="mini-bar" class="mini-track-fill"></div></div>
+      <div class="mini-meta">
+        <span id="mini-speed"></span>
+        <span id="mini-segments"></span>
+        <span id="mini-pct"></span>
+      </div>
+      <div class="mini-foot">
+        <span class="mini-hint">双击标题返回主界面</span>
+        <div class="mini-actions">
+          <button id="mini-pause" class="mini-action" type="button">暂停</button>
+          <button id="mini-restore" class="mini-icon-btn" type="button" title="返回主界面" aria-label="返回主界面">
+            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><rect x="1.5" y="3" width="6.5" height="6.5" rx="1" fill="none" stroke="currentColor" stroke-width="1"/><path d="M4 3V1.5h6.5V8H9" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="./app.js"></script>
+</body>
+</html>
