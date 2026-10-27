@@ -40,6 +40,10 @@ func (a *App) newTaskIDLocked() (string, error) {
 
 // emit 广播事件（应用句柄未就绪时静默丢弃，避免启动早期 panic）。
 func (a *App) emit(name string, payload interface{}) {
+	// 托盘提示顺带更新（内部有 800ms 节流，进度事件打不垮它）。
+	if name == "task-updated" || name == "task-removed" {
+		a.UpdateTrayHint()
+	}
 	a.mu.Lock()
 	app := a.app
 	a.mu.Unlock()

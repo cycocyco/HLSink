@@ -73,6 +73,8 @@
   const WindowSetSize = (w, h) => safe(RT.Window.SetSize(w, h));
   // 关闭走官方 Window.Close()（原生 WM_CLOSE），不要从绑定调用里调 Application.Quit()：
   // 后者会在 cleanup 里停 HTTP transport，等待当前这个调用结束，形成互相等待。
+  // 关闭窗口 = 进托盘（轻量模式）：真正销毁 WebView 释放内存，进程留在后台。
+  // 彻底退出走托盘右键菜单，不要再从界面里直接 Quit。
   const Quit = () => safe(RT.Window.Close());
 
 /* =========================================================================
@@ -259,9 +261,10 @@ function showToast(message, kind = 'info') {
     if (removed) return;
     removed = true;
     node.classList.add('toast-out');
+    // CSS 里退场是 --dur-leave(200ms)，这里留 50ms 余量再摘节点。
     window.setTimeout(() => {
       if (node.parentNode) node.parentNode.removeChild(node);
-    }, 180);
+    }, 250);
   };
   node.addEventListener('click', remove);
   window.setTimeout(remove, TOAST_LIFETIME_MS);
@@ -1083,7 +1086,14 @@ async function refreshToolStates() {
     if (!box) continue;
     const ok = !!t.found;
     box.classList.toggle('bad', !ok);
-    box.textContent = (ok ? '✓ ' : '✗ ') + (ok ? t.path : (t.note || '未找到'));
+    const text = (ok ? '✓ ' : '✗ ') + (ok ? t.path : (t.note || '未找到'));
+    // 只在内容真的变了时播一次进场：每次切到设置页都闪一遍反而烦。
+    if (box.textContent !== text) {
+      box.textContent = text;
+      box.classList.remove('is-fresh');
+      void box.offsetWidth; // 强制回流，让同名动画能重播
+      box.classList.add('is-fresh');
+    }
     box.title = ok ? t.path : (t.path ? '查找位置：' + t.path : '');
   }
 }
@@ -1216,12 +1226,45 @@ if (searchEl) {
   });
 }
 
+/** 切筛选时列表错落淡入的定时器（用于下一次切换前撤掉上一轮 class）。 */
+let listFlashTimer = 0;
+
+/**
+ * 让当前可见的卡片错落淡入一次。
+ *
+ * 为什么需要手动触发：卡片节点是 keyed diff 复用的，切筛选只是「隐藏/显示」，
+ * 不会重新创建节点，所以 CSS 里没有天然的进场时机。这里打一个一次性 class，
+ * 由 CSS 的 nth-child 决定每一项的延迟，播完就摘掉。
+ */
+function flashTaskList() {
+  const list = document.getElementById('task-list');
+  if (!list) return;
+  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  // 延迟写进 CSS 变量，每项 +22ms，第 8 项之后不再叠加（长列表不能越切越慢）
+  const cards = list.querySelectorAll('.task-card');
+  cards.forEach((card, i) => {
+    const step = Math.min(i, 8) * 22;
+    card.style.setProperty('--stagger', step + 'ms');
+  });
+  list.classList.remove('is-switching');
+  void list.offsetWidth; // 强制回流，同名动画才允许重播
+  list.classList.add('is-switching');
+  window.clearTimeout(listFlashTimer);
+  // 最慢一项：280ms 动画 + 176ms 延迟，留 60ms 余量
+  listFlashTimer = window.setTimeout(() => {
+    list.classList.remove('is-switching');
+    cards.forEach((card) => card.style.removeProperty('--stagger'));
+  }, 520);
+}
+
 document.querySelectorAll('.filter').forEach((btn) => {
   btn.addEventListener('click', () => {
     const value = String(/** @type {HTMLElement} */ (btn).dataset.filter || 'all');
     if (!['all', 'active', 'done', 'failed'].includes(value)) return;
+    if (state.filter === value) return; // 点同一个筛选不重播动画
     state.filter = /** @type {'all'|'active'|'done'|'failed'} */ (value);
     renderTasks();
+    flashTaskList();
   });
 });
 

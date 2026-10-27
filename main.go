@@ -43,40 +43,25 @@ func main() {
 			Handler: application.AssetFileServerFS(assets),
 		},
 		Windows: application.WindowsOptions{
+			// 关掉「最后一个窗口关闭即退出」：点 ❌ 之后进程要留在托盘里继续跑任务。
+			// 没有这一项，窗口一销毁消息循环就收到 WM_QUIT，托盘根本来不及用。
+			DisableQuitOnLastWindowClosed: true,
 			// 彻底杜绝 WebView2 在 %LOCALAPPDATA% 下生成几百兆缓存。
 			WebviewUserDataPath: filepath.Join(dataDir, "webview2"),
 		},
 		SingleInstance: &application.SingleInstanceOptions{
 			UniqueID: "HLSink_SingleInstance_Mutex_Lock",
 			OnSecondInstanceLaunch: func(data application.SecondInstanceData) {
-				// 第二次启动时把已有窗口拉到前台，而不是再开一个。
-				core.bringToFront()
+				// 第二次启动时把界面叫出来：窗口可能还在，也可能已经被销毁（托盘模式）。
+				core.ShowMainWindow()
 			},
 		},
 	})
 
-	win := app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title:     "HLSink",
-		Width:     640,
-		Height:    620,
-		MinWidth:  480,
-		MinHeight: 420,
-		// 不需要最大化：把上限锁在初始尺寸，拖到屏幕边缘或双击标题区也不会放大。
-		MaxWidth:         640,
-		MaxHeight:        620,
-		Frameless:        true, // 自绘标题栏，与界面同色融合
-		BackgroundColour: application.NewRGB(11, 12, 13),
-		URL:              "/",
-		Windows: application.WindowsWindow{
-			// 注意：不要设 DisableFramelessWindowDecorations。
-			// 该选项为 true 时 v3 会保留系统标题栏（framelessWithDecorations 判定为 false），
-			// 同时丢失 Win11 圆角。保持默认才会有真正的无边框 + 圆角。
-			Theme: application.Dark,
-		},
-	})
-
-	// 把应用与窗口句柄回传给业务层，彻底告别 v2 的 context 传参。
-	core.attach(app, win)
+	core.attachApp(app)
+	// 托盘必须先建好再开窗口：万一窗口起来就崩，用户至少还能从托盘退出。
+	core.setupTray(app)
+	core.createMainWindow(app)
 
 	if err := app.Run(); err != nil {
 		log.Fatal(err)

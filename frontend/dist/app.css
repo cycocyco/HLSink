@@ -1,4 +1,4 @@
-/* 喵抓 — 严格黑白灰界面 */
+/* HLSink — 严格黑白灰界面 */
 :root {
   --bg: #0b0c0d;
   --surface: #101113;
@@ -14,12 +14,37 @@
   --radius-sm: 7px;
 
   /* 动效代币：时序与缓动集中在这里，调手感只改这一处 */
-  --ease-out-standard: cubic-bezier(.32, .72, 0, 1); /* 极快启动 + 长拖尾减速 */
-  --ease-thumb: cubic-bezier(.2, .8, .2, 1);         /* 控件滑移，零弹跳 */
+  --ease-standard: cubic-bezier(.32, .72, 0, 1); /* 极快启动 + 长拖尾减速 */
+  --ease-thumb: cubic-bezier(.2, .8, .2, 1);     /* 控件滑移，零弹跳 */
   --ease-enter: cubic-bezier(.2, .8, .2, 1);
-  --dur-instant: 140ms;
-  --dur-micro: 220ms;
-  --dur-standard: 300ms;
+  --ease-press: cubic-bezier(.3, .7, .4, 1);
+
+  /* T1 微交互：进入慢、离开快。
+     只用一个时长的话，要么看不出变化（太快），要么鼠标划过一排按钮时
+     每个颜色都没走完就被下一个接上，形成"延迟跟随"的拖影——这就是粘滞感。 */
+  --dur-instant: 200ms; /* hover / focus 进入 */
+  --dur-exit: 120ms;    /* hover 离开（快速撤掉，不拖尾） */
+  --dur-press: 90ms;    /* 按下反馈，必须跟手 */
+
+  /* T2 元素进出：单个元素的出现/消失，慢一点更有分量 */
+  --dur-micro: 280ms;
+  /* 元素退场比进场快一档，不然会显得"舍不得走" */
+  --dur-leave: 200ms;
+  /* T3 容器迁移：tab 滑块 / 页面切换 / 弹窗 */
+  --dur-standard: 400ms;
+  /* 大范围或首屏 */
+  --dur-slow: 520ms;
+  /* 进度条：要压过数据刷新节拍，否则宽度一直在追 */
+  --dur-progress: 380ms;
+
+  /* T4 循环动效：不属于"过渡"，节奏单独一档，别和上面的时长混用 */
+  --dur-breath: 1.6s;
+  --dur-spin: 0.9s;
+  --dur-spin-slow: 1.1s; /* 转码比下载"重"，转得慢一点 */
+  --dur-sweep: 2.2s;
+  --ease-loop: linear;         /* 旋转必须匀速，否则像卡带 */
+  --ease-breath: ease-in-out;  /* 呼吸要软，线性会变成三角波 */
+  --ease-sweep: cubic-bezier(.5, 0, .3, 1);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -38,6 +63,69 @@ button, input { font: inherit; }
 button { color: inherit; }
 ::selection { background: #4a4d52; color: #fff; }
 :focus-visible { outline: 1px solid var(--fg-secondary); outline-offset: 2px; }
+
+/* =========================================================================
+ * 交互反馈（T1）
+ *
+ * 所有可点元素的过渡集中在这里，各处不要再自己写 transition。
+ *
+ * 双速做法：基础规则（= 鼠标离开时回到的状态）用 --dur-exit 快撤，
+ * :hover / :focus 规则里改成 --dur-instant 慢进。CSS 的 transition-duration
+ * 取的是「目标状态」的值，所以同一个属性天然能慢进快出——既看得见变化，
+ * 鼠标快速划过一排按钮时也不会每个都拖着半截颜色变化。
+ *
+ * :active 单独用 --dur-press（90ms）：按下必须跟手，慢了会像按键进泥里。
+ *
+ * 迷你模式（.mini-view 里的 .mini-action / .mini-icon-btn / .mini-cycle /
+ * .mini-pin）刻意排除在外：那个窗口的存在意义就是省资源。
+ * ========================================================================= */
+.tab,
+.filter,
+.toolbar-icon,
+.win-btn,
+.tbtn,
+.summary-btn,
+.mini-btn,
+.dir-row .icon-btn,
+.modal-btn,
+.search-shell,
+.text-input {
+  transition:
+    color var(--dur-exit) var(--ease-standard),
+    background-color var(--dur-exit) var(--ease-standard),
+    border-color var(--dur-exit) var(--ease-standard),
+    opacity var(--dur-exit) var(--ease-standard),
+    transform var(--dur-press) var(--ease-press);
+}
+
+/* 进入高亮态时慢一档 */
+.tab:hover,
+.filter:hover,
+.toolbar-icon:hover,
+.win-btn:hover,
+.tbtn:hover,
+.summary-btn:hover,
+.mini-btn:hover,
+.dir-row .icon-btn:hover,
+.modal-btn:hover,
+.search-shell:focus-within,
+.text-input:focus {
+  transition-duration: var(--dur-instant);
+}
+
+/* 按下反馈：只压一点，别做成一跳一跳的 */
+.tab:active,
+.filter:active,
+.toolbar-icon:active,
+.win-btn:active,
+.tbtn:active,
+.summary-btn:active,
+.mini-btn:active,
+.dir-row .icon-btn:active,
+.modal-btn:active {
+  transform: scale(.97);
+  transition-duration: var(--dur-press);
+}
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -131,7 +219,15 @@ button { color: inherit; }
 
 /* ---------- 页面 ---------- */
 .page { display: none; flex: 1; overflow-y: auto; padding: 16px 18px 24px; }
-.page.active { display: block; }
+/* 切页时内容淡入。tab 滑块已经先动了 400ms，内容瞬间硬切会显得割裂。 */
+.page.active {
+  display: block;
+  animation: page-in var(--dur-standard) var(--ease-standard) both;
+}
+
+@keyframes page-in {
+  from { opacity: 0; transform: translateY(7px); }
+}
 .task-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .search-shell {
   display: flex; align-items: center; gap: 8px;
@@ -192,7 +288,9 @@ button { color: inherit; }
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 12px 14px;
-  transition: border-color var(--dur-instant), background var(--dur-instant);
+  transition:
+    border-color var(--dur-instant) var(--ease-standard),
+    background-color var(--dur-instant) var(--ease-standard);
 }
 .task-card:hover { border-color: var(--border-strong); }
 .task-card.is-deleting { opacity: 0.6; }
@@ -204,7 +302,7 @@ button { color: inherit; }
  * 由 renderTasks 的 keyed diff 驱动，两个 class 的语义严格区分：
  *   is-entering  只加到「本次真正新增」的卡片上 → 动画必然只播一次
  *   is-leaving   只加到「任务确实被删除」的卡片上 → 切筛选不会满屏闪
- * 时序取设计规范的 Micro 档（180~240ms），不抢戏。
+ * 时序取 T2 档（280ms），退场 200ms 早走一步，不抢戏。
  * ========================================================================= */
 .task-card.is-entering {
   animation: card-in var(--dur-micro) var(--ease-enter) both;
@@ -215,8 +313,16 @@ button { color: inherit; }
 }
 
 .task-card.is-leaving {
-  animation: card-out 180ms var(--ease-out-standard) both;
+  animation: card-out var(--dur-leave) var(--ease-standard) both;
   pointer-events: none;
+}
+
+/* 切筛选时列表错落淡入：延迟由 JS 写进 --stagger（每项 +22ms，第 8 项封顶）。
+   卡片节点是复用的（keyed diff），本身没有进场时机，所以由 flashTaskList()
+   打一个一次性 class 触发；:not(.is-entering) 避免覆盖新卡片自己的入场动画。 */
+.list.is-switching > .task-card:not(.is-entering) {
+  animation: soft-in var(--dur-micro) var(--ease-enter) both;
+  animation-delay: var(--stagger, 0ms);
 }
 
 /* 故意不写 from：起始值会取元素当前的 opacity。
@@ -231,7 +337,7 @@ button { color: inherit; }
   border-radius: 50%; background: var(--fg-muted);
   position: relative;
 }
-.task-status-mark.s-running { background: var(--white); animation: mark-pulse 1.6s ease-in-out infinite; }
+.task-status-mark.s-running { background: var(--white); animation: mark-pulse var(--dur-breath) var(--ease-breath) infinite; }
 .task-status-mark.s-queued { background: transparent; border: 1px solid var(--fg-secondary); }
 .task-status-mark.s-paused { background: transparent; border: 1px solid var(--fg-muted); }
 .task-status-mark.s-pausing,
@@ -239,15 +345,25 @@ button { color: inherit; }
   background: transparent;
   border: 1px solid var(--fg-secondary);
   border-top-color: transparent;
-  animation: mark-spin 0.9s linear infinite;
+  animation: mark-spin var(--dur-spin) var(--ease-loop) infinite;
 }
 .task-status-mark.s-transcoding {
   background: transparent;
   border: 1px solid var(--fg-secondary);
   border-top-color: transparent;
-  animation: mark-spin 1.1s linear infinite;
+  animation: mark-spin var(--dur-spin-slow) var(--ease-loop) infinite;
 }
-.task-status-mark.s-done { width: 10px; height: 10px; background: #74787e; }
+.task-status-mark.s-done {
+  width: 10px; height: 10px;
+  background: #74787e;
+  /* 下载跑完是件值得"落一下"的事：轻轻弹一下再稳住。 */
+  animation: mark-pop var(--dur-micro) var(--ease-enter) both;
+}
+@keyframes mark-pop {
+  from { transform: scale(.5); opacity: .35; }
+  62%  { transform: scale(1.14); opacity: 1; }
+  to   { transform: scale(1); opacity: 1; }
+}
 .task-status-mark.s-done::after {
   content: "✓";
   position: absolute; inset: 0;
@@ -341,7 +457,7 @@ button { color: inherit; }
   height: 100%;
   background: var(--white);
   border-radius: 5px;
-  transition: width 0.35s ease;
+  transition: width var(--dur-progress) var(--ease-standard);
 }
 
 /* 传输中的能量流：一道高光沿着已完成段扫过。
@@ -367,7 +483,7 @@ button { color: inherit; }
 }
 .task-card.is-transferring .task-bar-fill::after {
   opacity: 1;
-  animation: energy-sweep 2.2s cubic-bezier(.5, 0, .3, 1) infinite;
+  animation: energy-sweep var(--dur-sweep) var(--ease-sweep) infinite;
 }
 
 @keyframes pure-fade-in {
@@ -382,7 +498,15 @@ button { color: inherit; }
 .task-bar-fill.done { background: #5e6268; }
 .task-bar-fill.failed { background: #4a4d52; }
 
-.empty { color: var(--fg-muted); text-align: center; padding: 72px 20px 50px; line-height: 1.8; }
+.empty {
+  color: var(--fg-muted); text-align: center; padding: 72px 20px 50px; line-height: 1.8;
+  animation: soft-in var(--dur-micro) var(--ease-enter) both;
+}
+
+/* 通用软进场：元素从"没有"变成"有"时用，别硬生生出现 */
+@keyframes soft-in {
+  from { opacity: 0; transform: translateY(5px); }
+}
 .empty-mark {
   width: 34px; height: 42px;
   margin: 0 auto 18px;
@@ -469,7 +593,8 @@ code {
   border: 1px solid var(--border-strong);
   border-radius: 11px;
   cursor: pointer;
-  transition: 0.16s;
+  transition: background var(--dur-instant) var(--ease-thumb),
+              border-color var(--dur-instant) var(--ease-thumb);
 }
 .slider::before {
   content: "";
@@ -478,7 +603,8 @@ code {
   left: 3px; top: 3px;
   background: #85898f;
   border-radius: 50%;
-  transition: 0.16s;
+  transition: transform var(--dur-instant) var(--ease-thumb),
+              background var(--dur-instant) var(--ease-thumb);
 }
 .switch input:checked + .slider { background: #d7d9dd; border-color: #d7d9dd; }
 .switch input:checked + .slider::before { background: #111214; transform: translateX(17px); }
@@ -507,7 +633,7 @@ code {
 .mini-state-dot.paused { background: transparent; border: 1px solid #8b8f96; }
 .mini-state-dot.done { background: #5e6268; }
 .mini-state-dot.error { background: transparent; border: 1px solid #8e9298; }
-.mini-state-dot.pulse { animation: mark-pulse 1.6s ease-in-out infinite; }
+.mini-state-dot.pulse { animation: mark-pulse var(--dur-breath) var(--ease-breath) infinite; }
 .mini-status-label { color: var(--fg); font-size: 11px; }
 .mini-queue { color: var(--fg-muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mini-title-row { display: flex; align-items: center; gap: 5px; min-width: 0; }
@@ -598,11 +724,17 @@ code {
   line-height: 1.55;
   word-break: break-word;
   user-select: text;
-  animation: toast-in 0.16s ease-out;
+  animation: toast-in var(--dur-micro) var(--ease-enter);
 }
 .toast.error { border-color: #55585e; }
 .toast.ok { border-color: #4a4d52; }
-.toast.toast-out { opacity: 0; transition: opacity 0.16s ease; }
+/* 进出都用 animation，别一边 animation 一边 transition：
+   两套机制的计时方式不同，叠加超时兜底时容易对不上。 */
+.toast.toast-out { animation: toast-out var(--dur-leave) var(--ease-standard) both; }
+
+@keyframes toast-out {
+  to { opacity: 0; transform: translateY(4px) scale(.985); }
+}
 @keyframes toast-in {
   from { opacity: 0; transform: translateY(5px); }
   to { opacity: 1; transform: translateY(0); }
@@ -616,7 +748,7 @@ code {
   padding: 20px;
   z-index: 9500;
   --wails-draggable: no-drag;
-  animation: veil-in var(--dur-standard) ease-out both;
+  animation: veil-in var(--dur-standard) var(--ease-standard) both;
 }
 
 @keyframes veil-in {
@@ -626,7 +758,7 @@ code {
 /* 退场解耦：卡片先收（180ms），幕布延后 100ms 再淡。
    直接让幕布一起淡，卡片会在收缩到一半时被幕布吞掉。 */
 .modal-mask.is-closing {
-  animation: veil-out 180ms ease-out 100ms both;
+  animation: veil-out var(--dur-leave) var(--ease-standard) 100ms both;
   pointer-events: none;
 }
 
@@ -639,7 +771,7 @@ code {
   border: 1px solid var(--border-strong);
   border-radius: 10px;
   padding: 18px 18px 15px;
-  animation: modal-in var(--dur-standard) var(--ease-out-standard) 40ms both;
+  animation: modal-in var(--dur-standard) var(--ease-standard) 40ms both;
 }
 
 @keyframes modal-in {
@@ -647,7 +779,7 @@ code {
 }
 
 .modal-mask.is-closing .modal {
-  animation: modal-out 180ms var(--ease-out-standard) both;
+  animation: modal-out var(--dur-leave) var(--ease-standard) both;
 }
 
 @keyframes modal-out {
@@ -732,9 +864,30 @@ code {
 
   /* 弹窗降级为纯淡入（不做位移与缩放） */
   .modal-mask { animation: none; }
-  .modal { animation: pure-fade-in 160ms ease-out both; }
+  .modal { animation: pure-fade-in var(--dur-micro) var(--ease-standard) both; }
   .modal-mask.is-closing,
   .modal-mask.is-closing .modal { animation: none; }
+
+  /* 新增的进场一律取消位移，只保留必要反馈 */
+  .page.active { animation: none; }
+  .empty,
+  .tool-state.is-fresh,
+  .task-status-mark.s-done { animation: none; }
+  .toast { animation: none; }
+  /* 退场没有动画可播，直接隐形，等 JS 摘节点 */
+  .toast.toast-out { animation: none; opacity: 0; }
+  .list.is-switching > .task-card:not(.is-entering) { animation: none; }
+
+  /* 按下缩放也去掉：减少前庭刺激 */
+  .tab:active,
+  .filter:active,
+  .toolbar-icon:active,
+  .win-btn:active,
+  .tbtn:active,
+  .summary-btn:active,
+  .mini-btn:active,
+  .dir-row .icon-btn:active,
+  .modal-btn:active { transform: none; }
 }
 
 
@@ -745,9 +898,13 @@ code {
   line-height: 1.5;
   color: var(--fg-muted);
   word-break: break-all;
+  transition: color var(--dur-instant) var(--ease-standard);
 }
 .tool-state:empty { display: none; }
 .tool-state.bad { color: #c27c7c; }
+/* 检测结果是异步填进来的，直接替换 textContent 会"啪"地跳出来。
+   由 refreshToolStates 在写入后打这个 class，播一次软进场。 */
+.tool-state.is-fresh { animation: soft-in var(--dur-micro) var(--ease-enter) both; }
 
 /* 工具路径行的文件夹选择按钮：方形、图标居中 */
 .dir-row .icon-btn {

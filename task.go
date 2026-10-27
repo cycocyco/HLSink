@@ -104,8 +104,16 @@ type Settings struct {
 // App Wails 绑定的应用对象。
 type App struct {
 	// v3 不再需要 context：直接持有应用与主窗口句柄。
-	app *application.App
-	win *application.WebviewWindow
+	app  *application.App
+	win  *application.WebviewWindow // 轻量模式下会被置空（窗口已销毁）
+	tray *application.SystemTray
+
+	// winMu 串行化窗口创建：托盘连点、单实例唤起可能同时要求重建窗口。
+	winMu sync.Mutex
+
+	// 托盘提示的节流状态：进度事件一秒几十次，每次都跨线程改 tooltip 会拖慢托盘。
+	trayHintAt   time.Time
+	trayHintText string
 
 	mu       sync.Mutex
 	tasks    map[string]*Task
@@ -133,25 +141,11 @@ type App struct {
 	shutdownOnce sync.Once
 }
 
-// attach 注入 v3 的应用与窗口句柄（在 application.New 之后调用）。
-func (a *App) attach(app *application.App, win *application.WebviewWindow) {
+// attachApp 注入 v3 的应用句柄（窗口由 createMainWindow 单独创建/重建）。
+func (a *App) attachApp(app *application.App) {
 	a.mu.Lock()
 	a.app = app
-	a.win = win
 	a.mu.Unlock()
-}
-
-// bringToFront 把主窗口重新拉到前台（单实例第二次启动时使用）。
-func (a *App) bringToFront() {
-	a.mu.Lock()
-	win := a.win
-	a.mu.Unlock()
-	if win == nil {
-		return
-	}
-	win.UnMinimise()
-	win.Show()
-	win.Focus()
 }
 
 // NewApp 构造应用实例。
