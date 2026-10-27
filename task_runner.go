@@ -151,6 +151,14 @@ const (
 	tailInterval = 300 * time.Millisecond
 	// stagedName RE / yt-dlp 在 staging 内统一使用的文件名前缀。
 	stagedName = "download"
+	// reStallAfter RE 连续这么久没有任何字节落地就认定它下不动，直接切 yt-dlp。
+	// 与其等它把每片都重试到超时（慢站点能磨几分钟），不如早点换引擎。
+	reStallAfter = 10 * time.Second
+	// ytdlpStallAfter yt-dlp 的停滞上限。它没有下一级可降级，阈值放宽到
+	// 45 秒（解析网页 + 过盾偶尔慢），只是为了不让任务永远卡在 0%。
+	ytdlpStallAfter = 45 * time.Second
+	// stallProbeInterval 停滞探测的采样间隔。
+	stallProbeInterval = 800 * time.Millisecond
 )
 
 // 引擎标识（下发给前端）。
@@ -161,6 +169,9 @@ const (
 
 // errCancelled 表示 run 因暂停/删除/退出被取消，不能当作下载失败处理。
 var errCancelled = errors.New("任务已取消")
+
+// errStalled 表示引擎在限定时间内没有任何下载进展，被看门狗主动终止。
+var errStalled = errors.New("引擎无下载进展")
 
 var (
 	reFrag  = regexp.MustCompile(`(\d+)/(\d+)\s+\d`)
@@ -528,15 +539,22 @@ func (a *App) doDownload(rs *runState, taskID string) (string, error) {
 		return "", errCancelled
 	}
 
-	// 降级判据：明确的 Cloudflare 特征；DASH 站点 RE 失败时也给 yt-dlp 一次机会。
+	// 降级判据（任一成立就换引擎）：
+	//   1. 看门狗认定 RE 10 秒没有任何字节落地；
+	//   2. 日志里出现明确的 Cloudflare 特征；
+	//   3. DASH 站点 RE 失败（分片格式兼容性问题居多）。
+	stalled := errors.Is(reErr, errStalled)
 	blocked := logShowsCloudflare(rs.logPath)
-	if !blocked && kind != kindDASH {
+	if !stalled && !blocked && kind != kindDASH {
 		return "", withLogTail(reErr, rs.logPath)
 	}
 
-	msg := "被 Cloudflare 拦截，切换 yt-dlp 引擎"
-	if !blocked {
-		msg = "RE 下载失败，切换 yt-dlp 引擎"
+	msg := "RE 下载失败，切换 yt-dlp 引擎"
+	switch {
+	case stalled:
+		msg = "RE 超过 10 秒没有下载进展，切换 yt-dlp 引擎"
+	case blocked:
+		msg = "被 Cloudflare 拦截，切换 yt-dlp 引擎"
 	}
 	a.mutateRun(taskID, rs.runID, func(t *Task) {
 		t.Engine = engineYtdlp
@@ -615,7 +633,8 @@ func (a *App) runRE(rs *runState, t *Task, downloadDir, tmpDir string) error {
 	for _, h := range headerArgs {
 		args = append(args, "-H", h)
 	}
-	return a.runExternal(rs, reExe, args, rs.logPath)
+	// 分片下载阶段必须有字节落地；10 秒一点没动就交给 yt-dlp，不陪它慢慢超时。
+	return a.runExternalWatched(rs, reExe, args, rs.logPath, reStallAfter, []string{downloadDir, tmpDir})
 }
 
 // runYtdlp 用 yt-dlp --impersonate chrome 下载到任务 staging。
@@ -638,10 +657,20 @@ func (a *App) runYtdlp(rs *runState, t *Task, downloadDir string) error {
 		"--newline", // 进度逐行输出，便于解析
 		"--no-playlist",
 		"-N", threads, // 分片并发与 RE 使用同一设置
+		// 连接/读取卡住时别无限等：10 秒没有数据就断开重试，
+		// 否则站点半死不活时任务会永远停在 0%。
+		"--socket-timeout", "10",
 	}
 	// 显式指定自带 ffmpeg，避免依赖系统 PATH 或别的软件装的那份。
 	if dir := a.toolFFmpegDir(); dir != "" {
 		args = append(args, "--ffmpeg-location", dir)
+	}
+	// yt-dlp（curl_cffi）不会自动读 Windows 的"系统代理"设置，
+	// 用户开着代理时它会直连，于是报 TLS connect error。
+	// RE 走 .NET 默认代理是通的，两边行为必须对齐。
+	if proxy := systemProxy(); proxy != "" {
+		args = append(args, "--proxy", proxy)
+		appendLog(rs.logPath, "[HLSink] 使用系统代理 "+proxy)
 	}
 	// Referer 为空就不伪造，交给站点默认行为。
 	if ref := cleanHeaderValue(t.Referer); ref != "" {
@@ -654,7 +683,11 @@ func (a *App) runYtdlp(rs *runState, t *Task, downloadDir string) error {
 	for _, h := range extra {
 		args = append(args, "--add-header", h)
 	}
-	return a.runExternal(rs, yt, args, rs.logPath)
+	err := a.runExternalWatched(rs, yt, args, rs.logPath, ytdlpStallAfter, []string{downloadDir})
+	if errors.Is(err, errStalled) {
+		return fmt.Errorf("yt-dlp 超过 %d 秒没有下载进展", int(ytdlpStallAfter.Seconds()))
+	}
+	return err
 }
 
 // doTranscode 用 ffmpeg 转 HEVC（NVENC），返回成品路径。
@@ -694,6 +727,18 @@ func (a *App) doTranscode(rs *runState, t *Task, src string) (string, error) {
 
 // runExternal 启动外部进程，输出追加写入日志；进程登记到 runState 以便被杀。
 func (a *App) runExternal(rs *runState, exe string, args []string, logPath string) error {
+	return a.runExternalWatched(rs, exe, args, logPath, 0, nil)
+}
+
+// runExternalWatched 在 runExternal 基础上加一个「停滞看门狗」。
+//
+// idle > 0 且给出 probes 目录时，每 stallProbeInterval 采样一次这些目录的
+// 总字节数：连续 idle 时长没有任何变化（下载引擎既不写分片也不写成品），
+// 就杀掉进程并返回 errStalled。判据用磁盘上真实落地的字节，而不是解析
+// 控制台输出——RE 在解析清单、重试分片时都可能长时间不打印进度。
+//
+// idle <= 0 时行为与 runExternal 完全一致（转码/封面等不需要这套）。
+func (a *App) runExternalWatched(rs *runState, exe string, args []string, logPath string, idle time.Duration, probes []string) error {
 	if rs.ctx.Err() != nil {
 		return errCancelled
 	}
@@ -715,9 +760,61 @@ func (a *App) runExternal(rs *runState, exe string, args []string, logPath strin
 		return fmt.Errorf("启动 %s 失败: %w", filepath.Base(exe), err)
 	}
 	rs.track(cmd)
+
+	// ---- 停滞看门狗 ----
+	var (
+		stopWatch chan struct{}
+		watchDone chan struct{}
+		stalled   bool
+		stalledMu sync.Mutex
+	)
+	if idle > 0 && len(probes) > 0 {
+		stopWatch = make(chan struct{})
+		watchDone = make(chan struct{})
+		go func() {
+			defer close(watchDone)
+			ticker := time.NewTicker(stallProbeInterval)
+			defer ticker.Stop()
+
+			last := dirBytes(probes...)
+			lastMove := time.Now()
+			for {
+				select {
+				case <-stopWatch:
+					return
+				case <-ticker.C:
+				}
+				cur := dirBytes(probes...)
+				if cur != last {
+					// 字节数变化（含分片被清理导致的减少）都算在动。
+					last, lastMove = cur, time.Now()
+					continue
+				}
+				if time.Since(lastMove) >= idle {
+					stalledMu.Lock()
+					stalled = true
+					stalledMu.Unlock()
+					killTree(cmd.Process)
+					return
+				}
+			}
+		}()
+	}
+
 	waitErr := cmd.Wait()
 	rs.untrack(cmd)
+	if stopWatch != nil {
+		close(stopWatch)
+		<-watchDone
+	}
 
+	stalledMu.Lock()
+	wasStalled := stalled
+	stalledMu.Unlock()
+
+	if wasStalled && waitErr != nil && rs.ctx.Err() == nil {
+		return errStalled
+	}
 	if waitErr != nil {
 		if rs.ctx.Err() != nil {
 			return errCancelled
@@ -725,6 +822,45 @@ func (a *App) runExternal(rs *runState, exe string, args []string, logPath strin
 		return fmt.Errorf("%s 退出异常: %w", filepath.Base(exe), waitErr)
 	}
 	return nil
+}
+
+// appendLog 往 run 日志追加一行诊断信息。
+// 解析器只认 RE / yt-dlp 的进度行，认不出的行会被忽略，不会干扰进度。
+func appendLog(path, line string) {
+	if path == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return
+	}
+	_, _ = f.WriteString(line + "\n")
+	_ = f.Close()
+}
+
+// dirBytes 统计若干目录下所有文件的字节总和（目录不存在按 0 计）。
+//
+// 注意：这里必须对每个文件调用 os.Stat，不能直接用 WalkDir 拿到的
+// DirEntry.Info()。后者走的是目录枚举（FindFirstFile），Windows 上正在被
+// 写入的文件，其目录项大小可能长时间停留在旧值甚至 0，会把「正在下载」
+// 误判成「停滞」。os.Stat 走文件句柄查询，拿到的是实时大小。
+func dirBytes(dirs ...string) int64 {
+	var total int64
+	for _, dir := range dirs {
+		_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+			if err != nil || d == nil || d.IsDir() {
+				return nil
+			}
+			if info, ierr := os.Stat(p); ierr == nil {
+				total += info.Size()
+			}
+			return nil
+		})
+	}
+	return total
 }
 
 // ---- 请求头处理 ----
