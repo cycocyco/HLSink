@@ -89,9 +89,11 @@ func (t *Task) clone() *Task {
 
 // Settings 用户设置。hevctTranscode 是历史字段名，保留以兼容旧配置文件。
 //
-// REPath / YtdlpPath / FFmpegPath 是外部工具路径（不再写死）：
-// 可填完整 exe 路径、所在目录，或 PATH 里的命令名；留空则自动在 exe 旁
-// tools/deps/bin 目录与系统 PATH 中查找。
+// 三个 *Path 字段是外部工具的路径来源：可填完整 exe 路径、所在目录，或
+// PATH 里的命令名；留空则自动在 exe 旁 tools/deps/bin 目录与系统 PATH 中查找。
+//
+// 新增一个外部工具时：这里加一个字段（保持 JSON 向后兼容），并在
+// App.toolMap() 里补一行「引擎 key → 该字段」。引擎实现与编排层都不用动。
 type Settings struct {
 	HEVCTranscode bool   `json:"hevctTranscode"`
 	DownloadDir   string `json:"downloadDir"`

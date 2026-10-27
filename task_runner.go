@@ -5,137 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"regexp"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
+
+	"hlsink/internal/engine"
 )
 
-// ---- 外部工具路径解析（不再写死） ----
-
-// toolSubdirs 是目录里找不到可执行文件时的下探顺序。
+// 本文件只做「编排」：任务怎么排队、用哪个引擎、失败了要不要降级、成品怎么发布。
 //
-// ffmpeg 官方 Windows 包是 <root>\bin\ffmpeg.exe 这种结构，用户填的大多是
-// 解压根目录，所以必须往下探一层，否则会拼出一个不存在的路径。
-var toolSubdirs = []string{"bin", "tools", "deps"}
-
-// findToolInDir 在 dir 本身及其常见子目录里查找 binary，找不到返回空串。
-func findToolInDir(dir, binary string) string {
-	if st, err := os.Stat(filepath.Join(dir, binary)); err == nil && !st.IsDir() {
-		return filepath.Join(dir, binary)
-	}
-	for _, sub := range toolSubdirs {
-		cand := filepath.Join(dir, sub, binary)
-		if st, err := os.Stat(cand); err == nil && !st.IsDir() {
-			return cand
-		}
-	}
-	return ""
-}
-
-// resolveToolPath 把用户设置解析成可执行文件的绝对路径。
-//
-// raw 支持：完整 exe 路径 / 所在目录 / PATH 中的命令名；留空则自动在
-// exe 旁及其 tools|deps|bin 子目录、系统 PATH 中查找。找不到返回空字符串。
-func resolveToolPath(raw, binary string) string {
-	raw = strings.TrimSpace(raw)
-	if raw != "" {
-		if st, err := os.Stat(raw); err == nil {
-			if st.IsDir() {
-				if p := findToolInDir(raw, binary); p != "" {
-					return p
-				}
-				// 目录里确实没有：仍是拼一个具体路径返回，
-				// 让调用方的报错能指出"在哪个位置找的哪个文件"，便于排查。
-				return filepath.Join(raw, binary)
-			}
-			return raw
-		}
-		if p, err := exec.LookPath(raw); err == nil {
-			return p
-		}
-		return filepath.Join(raw, binary)
-	}
-	if exe, err := os.Executable(); err == nil {
-		if p := findToolInDir(filepath.Dir(exe), binary); p != "" {
-			return p
-		}
-	}
-	if p, err := exec.LookPath(binary); err == nil {
-		return p
-	}
-	return ""
-}
-
-// toolRE 返回 N_m3u8DL-RE 可执行文件路径。
-func (a *App) toolRE() string {
-	return resolveToolPath(a.currentSettings().REPath, "N_m3u8DL-RE.exe")
-}
-
-// toolYtdlp 返回 yt-dlp 可执行文件路径。
-func (a *App) toolYtdlp() string {
-	return resolveToolPath(a.currentSettings().YtdlpPath, "yt-dlp.exe")
-}
-
-// toolFFmpeg 返回 ffmpeg 可执行文件路径。
-func (a *App) toolFFmpeg() string {
-	return resolveToolPath(a.currentSettings().FFmpegPath, "ffmpeg.exe")
-}
-
-// toolFFmpegDir 返回 ffmpeg 所在目录（供 yt-dlp --ffmpeg-location 使用）。
-// 文件不存在时返回空：宁可让 yt-dlp 自己去 PATH 找，也不要喂它一个假目录。
-func (a *App) toolFFmpegDir() string {
-	ff := a.toolFFmpeg()
-	if ff == "" {
-		return ""
-	}
-	if st, err := os.Stat(ff); err != nil || st.IsDir() {
-		return ""
-	}
-	return filepath.Dir(ff)
-}
-
-// ToolStatus 是单个外部工具的解析结果，供设置页回显「到底认没认出来」。
-type ToolStatus struct {
-	Key   string `json:"key"`
-	Name  string `json:"name"`
-	Path  string `json:"path"`
-	Found bool   `json:"found"`
-	Note  string `json:"note"`
-}
-
-// CheckTools 把三个外部工具的解析结果回显给设置页。
-//
-// 用户填目录、填 exe、留空自动找，最终都经过 resolveToolPath，
-// 这里直接把命中结果报出来——填完不用猜，也不用等到下载失败才发现。
-func (a *App) CheckTools() []ToolStatus {
-	s := a.currentSettings()
-	one := func(key, name, raw, binary string) ToolStatus {
-		p := resolveToolPath(raw, binary)
-		out := ToolStatus{Key: key, Name: name, Path: p}
-		if p == "" {
-			out.Note = "未找到，请指定目录或 exe"
-			return out
-		}
-		if st, err := os.Stat(p); err != nil || st.IsDir() {
-			out.Note = "该位置没有 " + binary
-			return out
-		}
-		out.Found = true
-		out.Note = "已就绪"
-		return out
-	}
-	return []ToolStatus{
-		one("re", "N_m3u8DL-RE", s.REPath, "N_m3u8DL-RE.exe"),
-		one("ytdlp", "yt-dlp", s.YtdlpPath, "yt-dlp.exe"),
-		one("ffmpeg", "ffmpeg", s.FFmpegPath, "ffmpeg.exe"),
-	}
-}
+// 具体某个外部工具的参数怎么拼、输出怎么读，全部在 internal/engine 里。
+// 这里不允许出现任何一个具体工具的名字或参数——加新工具时本文件不用改。
 
 // 真正有界的并发：最多 2 个下载 + 1 个转码同时跑，其余任务保持 queued。
 const (
@@ -149,33 +30,9 @@ const (
 	runStopTimeout = 8 * time.Second
 	// tailInterval 日志进度轮询间隔。
 	tailInterval = 300 * time.Millisecond
-	// stagedName RE / yt-dlp 在 staging 内统一使用的文件名前缀。
+	// stagedName 所有引擎在 staging 内统一使用的文件名前缀。
+	// findStaged 靠它认产物，所以这里是全局约定，不属于某个引擎。
 	stagedName = "download"
-	// reStallAfter RE 连续这么久没有任何字节落地就认定它下不动，直接切 yt-dlp。
-	// 与其等它把每片都重试到超时（慢站点能磨几分钟），不如早点换引擎。
-	reStallAfter = 10 * time.Second
-	// ytdlpStallAfter yt-dlp 的停滞上限。它没有下一级可降级，阈值放宽到
-	// 45 秒（解析网页 + 过盾偶尔慢），只是为了不让任务永远卡在 0%。
-	ytdlpStallAfter = 45 * time.Second
-	// stallProbeInterval 停滞探测的采样间隔。
-	stallProbeInterval = 800 * time.Millisecond
-)
-
-// 引擎标识（下发给前端）。
-const (
-	engineRE    = "re"
-	engineYtdlp = "yt-dlp"
-)
-
-// errCancelled 表示 run 因暂停/删除/退出被取消，不能当作下载失败处理。
-var errCancelled = errors.New("任务已取消")
-
-// errStalled 表示引擎在限定时间内没有任何下载进展，被看门狗主动终止。
-var errStalled = errors.New("引擎无下载进展")
-
-var (
-	reFrag  = regexp.MustCompile(`(\d+)/(\d+)\s+\d`)
-	reFrag2 = regexp.MustCompile(`frag (\d+)/(\d+)`)
 )
 
 // runState 表示一次运行（下载 + 可选转码）的全部可取消资源。
@@ -185,45 +42,45 @@ type runState struct {
 	cancel  context.CancelFunc
 	done    chan struct{}
 	logPath string
+	procs   *engine.Procs
 
-	mu    sync.Mutex
-	procs map[int]*os.Process
+	// engKey 当前正在跑的引擎 key。进度解析要用它，因为不同引擎的输出格式不同，
+	// 只能让「正在跑的那个」来解释自己的输出，不能拿所有引擎挨个试。
+	engMu  sync.RWMutex
+	engKey string
 }
 
-// track 登记一个外部进程，供暂停/删除/退出时杀进程树。
-func (rs *runState) track(cmd *exec.Cmd) {
-	if rs == nil || cmd == nil || cmd.Process == nil {
-		return
-	}
-	rs.mu.Lock()
-	rs.procs[cmd.Process.Pid] = cmd.Process
-	rs.mu.Unlock()
-}
-
-// untrack 进程正常退出后取消登记。
-func (rs *runState) untrack(cmd *exec.Cmd) {
-	if rs == nil || cmd == nil || cmd.Process == nil {
-		return
-	}
-	rs.mu.Lock()
-	delete(rs.procs, cmd.Process.Pid)
-	rs.mu.Unlock()
-}
-
-// killAll 杀掉所有登记进程的进程树（RE / yt-dlp / ffmpeg）。
-func (rs *runState) killAll() {
+// setEngine 记录当前引擎（含降级切换）。
+func (rs *runState) setEngine(key string) {
 	if rs == nil {
 		return
 	}
-	rs.mu.Lock()
-	procs := make([]*os.Process, 0, len(rs.procs))
-	for _, p := range rs.procs {
-		procs = append(procs, p)
+	rs.engMu.Lock()
+	rs.engKey = key
+	rs.engMu.Unlock()
+}
+
+// currentEngine 返回当前引擎实现，未设置时返回 nil。
+func (rs *runState) currentEngine() engine.Downloader {
+	if rs == nil {
+		return nil
 	}
-	rs.mu.Unlock()
-	for _, p := range procs {
-		killTree(p)
+	rs.engMu.RLock()
+	key := rs.engKey
+	rs.engMu.RUnlock()
+	if key == "" {
+		return nil
 	}
+	d, _ := engine.Get(key)
+	return d
+}
+
+// killAll 杀掉本次运行登记的所有进程树。
+func (rs *runState) killAll() {
+	if rs == nil || rs.procs == nil {
+		return
+	}
+	rs.procs.KillAll()
 }
 
 // waitDone 等待 run 结束，超时返回。
@@ -244,29 +101,6 @@ func (rs *runState) waitDone(timeout time.Duration) {
 	case <-rs.done:
 	case <-timer.C:
 	}
-}
-
-// hideWindow 压掉外部 exe 的控制台黑框（仅 Windows）。
-func hideWindow(cmd *exec.Cmd) {
-	if cmd == nil {
-		return
-	}
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000} // CREATE_NO_WINDOW
-}
-
-// killTree 杀掉进程及其子进程（Windows: taskkill /T /F）。
-func killTree(p *os.Process) {
-	if p == nil {
-		return
-	}
-	cmd := exec.Command("taskkill", "/PID", strconv.Itoa(p.Pid), "/T", "/F")
-	hideWindow(cmd)
-	// 只发起、不等待：taskkill 是独立进程，父进程退出后它照样会跑完。
-	// 若这里 cmd.Run() 等结果，多个任务叠加就会把点 X 拖成秒级。
-	if err := cmd.Start(); err == nil {
-		go func() { _ = cmd.Wait() }()
-	}
-	_ = p.Kill()
 }
 
 // acquireSlot 获取并发槽位；context 取消时立刻返回 false（排队中的任务可被暂停/删除）。
@@ -296,6 +130,58 @@ func releaseSlot(sem chan struct{}) {
 	}
 }
 
+// ---- 外部工具解析（配置字段 → 引擎）----
+
+// toolMap 把设置里的路径字段映射成「引擎 key → 用户填的原始值」。
+//
+// 这是唯一知道「配置字段叫什么」的地方：配置是 main 的概念，引擎只认自己的 key。
+// 加一个工具时，这里补一行、Settings 补一个字段即可，引擎实现不用动。
+func (a *App) toolMap() map[string]string {
+	s := a.currentSettings()
+	return map[string]string{
+		engine.KeyRE:     s.REPath,
+		engine.KeyYtdlp:  s.YtdlpPath,
+		engine.KeyFFmpeg: s.FFmpegPath,
+	}
+}
+
+// tools 解析出本次运行可用的依赖（ffmpeg 等）。
+//
+// 只有文件确实存在才填：给引擎一个不存在的路径，比不填更糟
+// （RE 会拿它去混流然后 exit 1，报错完全看不出是 ffmpeg 的问题）。
+func (a *App) tools() engine.Tools {
+	var t engine.Tools
+	tr := engine.GetTranscoder()
+	if tr == nil {
+		return t
+	}
+	if ff := engine.Resolve(a.toolMap()[tr.Key()], tr.Binary()); ff != "" {
+		if st, err := os.Stat(ff); err == nil && !st.IsDir() {
+			t.FFmpeg = ff
+			t.FFmpegDir = filepath.Dir(ff)
+		}
+	}
+	return t
+}
+
+// CheckTools 把所有外部工具的解析结果回显给设置页。
+//
+// 遍历注册表而不是写死三个名字：以后加工具，设置页会自动多出一行状态，
+// 后端零改动（前端补一个占位 DOM 即可显示）。
+func (a *App) CheckTools() []engine.Status {
+	paths := a.toolMap()
+	out := make([]engine.Status, 0, 4)
+	for _, d := range engine.List() {
+		out = append(out, engine.Check(d.Key(), d.Label(), paths[d.Key()], d.Binary()))
+	}
+	if t := engine.GetTranscoder(); t != nil {
+		out = append(out, engine.Check(t.Key(), t.Label(), paths[t.Key()], t.Binary()))
+	}
+	return out
+}
+
+// ---- 运行调度 ----
+
 // launchRun 为任务启动一次新的 run：新的 RunID + 独立日志文件。
 //
 // 注意：工作目录只在 run 内部创建，这样「删除中」的任务不可能被迟到的 run
@@ -320,7 +206,7 @@ func (a *App) launchRun(taskID string) error {
 		cancel:  cancel,
 		done:    make(chan struct{}),
 		logPath: logPath,
-		procs:   map[int]*os.Process{},
+		procs:   engine.NewProcs(),
 	}
 
 	a.mu.Lock()
@@ -375,8 +261,9 @@ func (a *App) runLoop(rs *runState, taskID string) {
 	tailCtx, stopTail := context.WithCancel(rs.ctx)
 	defer stopTail()
 	go a.tailRunLog(tailCtx, taskID, rs.runID, rs.logPath, func(text string) {
-		a.applyREProgress(taskID, rs.runID, text)
-		a.applyYtdlpProgress(taskID, rs.runID, text)
+		if d := rs.currentEngine(); d != nil {
+			a.applyProgress(taskID, rs.runID, d, text)
+		}
 	})
 
 	// ---- 下载阶段（并发上限 2；没拿到槽位的任务保持 queued）----
@@ -397,7 +284,7 @@ func (a *App) runLoop(rs *runState, taskID string) {
 	releaseSlot(a.downloadSem)
 
 	if downloadErr != nil {
-		if rs.ctx.Err() != nil || errors.Is(downloadErr, errCancelled) {
+		if rs.ctx.Err() != nil || errors.Is(downloadErr, engine.ErrCancelled) {
 			return // 暂停/删除/退出导致的中断，交给控制方写状态
 		}
 		msg := downloadErr.Error()
@@ -425,7 +312,7 @@ func (a *App) runLoop(rs *runState, taskID string) {
 		}
 		out, terr := a.doTranscode(rs, task, product)
 		releaseSlot(a.transcodeSem)
-		if rs.ctx.Err() != nil || errors.Is(terr, errCancelled) {
+		if rs.ctx.Err() != nil || errors.Is(terr, engine.ErrCancelled) {
 			return
 		}
 		if terr == nil {
@@ -480,11 +367,13 @@ func (a *App) runLoop(rs *runState, taskID string) {
 }
 
 // doDownload 下载到任务 staging，返回精确的 staged 产物路径。
-// RE 优先；仅当本次日志出现明确 Cloudflare 特征时降级 yt-dlp。
+//
+// 引擎选择完全由注册表决定：先问「谁认领这种源」，失败后按引擎自己声明的
+// Fallback 往下走。本函数不认识具体工具。
 func (a *App) doDownload(rs *runState, taskID string) (string, error) {
 	snap := a.taskSnapshot(taskID)
 	if snap == nil {
-		return "", errCancelled
+		return "", engine.ErrCancelled
 	}
 	workDir := snap.WorkDir
 	if workDir == "" {
@@ -499,205 +388,155 @@ func (a *App) doDownload(rs *runState, taskID string) (string, error) {
 		return "", fmt.Errorf("创建任务分片目录失败: %w", err)
 	}
 
-	kind := normalizeStreamKind(snap.Kind)
-	if !isKnownStreamKind(kind) {
-		kind = detectStreamKind(snap.URL)
+	kind := engine.NormalizeKind(snap.Kind)
+	if !kind.Known() {
+		kind = engine.DetectKind(snap.URL)
 	}
 
-	// 网页地址（或非已知流地址）：RE 只吃清单文件，交给 yt-dlp 自行解析。
-	if kind == kindPage {
+	job := engine.Job{
+		URL:     snap.URL,
+		Kind:    kind,
+		OutDir:  downloadDir,
+		TmpDir:  tmpDir,
+		Threads: normalizeThreadCount(snap.threadCount),
+		Headers: snap.Headers,
+		Referer: snap.Referer,
+		Proxy:   systemProxy(),
+		Name:    stagedName,
+	}
+	tools := a.tools()
+
+	current := engine.Pick(kind)
+	if current == nil {
+		return "", fmt.Errorf("没有可用的引擎处理 %s 链接", kind.Label())
+	}
+
+	first := true
+	for {
+		hint := ""
+		if first {
+			hint = current.Hint()
+			first = false
+		}
 		a.mutateRun(taskID, rs.runID, func(t *Task) {
-			t.Engine = engineYtdlp
-			t.Message = "正在解析网页地址"
+			t.Engine = current.Key()
+			if hint != "" {
+				t.Message = hint
+			}
 		})
-		if err := a.runYtdlp(rs, snap, downloadDir); err != nil {
-			if rs.ctx.Err() != nil {
-				return "", errCancelled
+
+		runErr := a.runEngine(rs, current, job, tools)
+		if rs.ctx.Err() != nil {
+			return "", engine.ErrCancelled
+		}
+
+		if runErr == nil {
+			if p, ferr := findStaged(downloadDir); ferr == nil {
+				return p, nil
+			} else {
+				// 引擎说成功了但没产物，也当失败处理（可能是站点返回了空清单）。
+				runErr = ferr
 			}
-			return "", withLogTail(err, rs.logPath)
 		}
-		if rs.ctx.Err() != nil {
-			return "", errCancelled
-		}
-		p, err := findStaged(downloadDir)
-		if err != nil {
-			return "", withLogTail(err, rs.logPath)
-		}
-		return p, nil
-	}
 
-	a.mutateRun(taskID, rs.runID, func(t *Task) { t.Engine = engineRE })
-	reErr := a.runRE(rs, snap, downloadDir, tmpDir)
-	if reErr == nil {
-		if p, ferr := findStaged(downloadDir); ferr == nil {
-			return p, nil
-		} else {
-			reErr = ferr
+		next, ok := a.fallbackFor(kind, current, runErr, rs.logPath)
+		if !ok {
+			return "", withLogTail(a.explainEngineError(current, runErr), rs.logPath)
 		}
-	}
-	if rs.ctx.Err() != nil {
-		return "", errCancelled
-	}
 
-	// 降级判据（任一成立就换引擎）：
-	//   1. 看门狗认定 RE 10 秒没有任何字节落地；
-	//   2. 日志里出现明确的 Cloudflare 特征；
-	//   3. DASH 站点 RE 失败（分片格式兼容性问题居多）。
-	stalled := errors.Is(reErr, errStalled)
-	blocked := logShowsCloudflare(rs.logPath)
-	if !stalled && !blocked && kind != kindDASH {
-		return "", withLogTail(reErr, rs.logPath)
+		msg := a.fallbackMessage(current, next, runErr, rs.logPath)
+		a.mutateRun(taskID, rs.runID, func(t *Task) {
+			t.Engine = next.Key()
+			t.Message = msg
+		})
+		// 先清掉上一轮的半成品，避免与下一个引擎的输出名冲突（只在 staging 内清理）。
+		clearStaged(downloadDir)
+		current = next
 	}
+}
 
-	msg := "RE 下载失败，切换 yt-dlp 引擎"
-	switch {
-	case stalled:
-		msg = "RE 超过 10 秒没有下载进展，切换 yt-dlp 引擎"
-	case blocked:
-		msg = "被 Cloudflare 拦截，切换 yt-dlp 引擎"
-	}
-	a.mutateRun(taskID, rs.runID, func(t *Task) {
-		t.Engine = engineYtdlp
-		t.Message = msg
-	})
-	// 先清掉上一轮的半成品，避免与 yt-dlp 的输出名冲突（只在任务 staging 内清理）。
-	clearStaged(downloadDir)
-	if ytErr := a.runYtdlp(rs, snap, downloadDir); ytErr != nil {
-		if rs.ctx.Err() != nil {
-			return "", errCancelled
-		}
-		return "", withLogTail(ytErr, rs.logPath)
-	}
-	if rs.ctx.Err() != nil {
-		return "", errCancelled
-	}
-	p, err := findStaged(downloadDir)
+// runEngine 用指定引擎执行一次下载。
+func (a *App) runEngine(rs *runState, d engine.Downloader, job engine.Job, tools engine.Tools) error {
+	exe, err := engine.Executable(a.toolMap()[d.Key()], d.Binary(), d.Label())
 	if err != nil {
-		return "", withLogTail(err, rs.logPath)
+		return err
 	}
-	return p, nil
+	cmd, err := d.Build(job, tools)
+	if err != nil {
+		return err
+	}
+	cmd.Exe = exe
+	for _, note := range cmd.Notes {
+		engine.AppendLog(rs.logPath, note)
+	}
+
+	// 先登记再启动：tail 可能在同一瞬间收到第一行输出，必须能查到是谁写的。
+	rs.setEngine(d.Key())
+	return engine.Run(rs.ctx, engine.RunOpts{
+		Command: cmd,
+		LogPath: rs.logPath,
+		Idle:    d.Stall(),
+		Probes:  d.Probes(job),
+		Procs:   rs.procs,
+	})
 }
 
-// runRE 用 N_m3u8DL-RE 下载到任务 staging（支持 HLS / DASH）。
-func (a *App) runRE(rs *runState, t *Task, downloadDir, tmpDir string) error {
-	reExe := a.toolRE()
-	if reExe == "" {
-		return fmt.Errorf("未找到 N_m3u8DL-RE，请在设置里指定它的路径")
+// fallbackFor 判断当前引擎失败后是否值得换引擎再试，值得则返回下一个引擎。
+//
+// 判断条件（任一成立就换）：
+//   - 看门狗认定它连续无进展（有下一级就早点换，别等它把每片都试到超时）；
+//   - 日志里出现明确的 Cloudflare 特征；
+//   - DASH 站点失败（分片格式兼容性问题居多）。
+//
+// 最后一条是历史经验：DASH 的 fMP4 各家实现差异大，RE 报错时换 yt-dlp
+// 往往能过，所以对 DASH 放宽到「只要失败就再试一次」。
+func (a *App) fallbackFor(kind engine.Kind, from engine.Downloader, err error, logPath string) (engine.Downloader, bool) {
+	key := from.Fallback()
+	if key == "" || err == nil {
+		return nil, false
 	}
-	if st, err := os.Stat(reExe); err != nil || st.IsDir() {
-		return fmt.Errorf("N_m3u8DL-RE 不在指定位置: %s", reExe)
+	stalled := errors.Is(err, engine.ErrStalled)
+	blocked := logShowsCloudflare(logPath)
+	if !stalled && !blocked && kind != engine.KindDASH {
+		return nil, false
 	}
-	threads := strconv.Itoa(normalizeThreadCount(t.threadCount))
-	kind := normalizeStreamKind(t.Kind)
-	if !isKnownStreamKind(kind) {
-		kind = detectStreamKind(t.URL)
+	next, ok := engine.Get(key)
+	if !ok {
+		return nil, false
 	}
-	// DASH 的 fMP4 分片交给 ffmpeg 正常混流；HLS 沿用二进制合并（TS 直拼更稳更快）。
-	muxArgs := []string{"-M", "format=mp4:mux importer=raw"}
-	if kind == kindDASH {
-		muxArgs = []string{"-M", "format=mp4"}
-	}
-	args := []string{
-		t.URL,
-		"--save-dir", downloadDir,
-		"--tmp-dir", tmpDir,
-		"--save-name", stagedName,
-		"--thread-count", threads, // 分片并发；默认 32，替代 RE 自带的 12
-		"-mt", // 音视频轨道并行下载，避免先视频后音频
-		"--disable-update-check",
-		"--auto-select", // 无交互环境必须自动选轨
-		"--no-log",
-	}
-	// 只有 ffmpeg 确实存在才传：传一个不存在的路径，RE 会在混流阶段
-	// 直接退出（exit status 1），报错信息还完全看不出是 ffmpeg 的问题。
-	if ff := a.toolFFmpeg(); ff != "" {
-		if st, err := os.Stat(ff); err == nil && !st.IsDir() {
-			args = append(args, "--ffmpeg-binary-path", ff)
-		}
-	}
-	args = append(args, muxArgs...)
-	headerArgs := headerLines(t.Headers)
-	// Referer 是单独字段；若合并后的 Headers 没带它，仍需显式补上防盗链头。
-	if ref := cleanHeaderValue(t.Referer); ref != "" {
-		hasReferer := false
-		for k := range t.Headers {
-			if strings.EqualFold(k, "Referer") {
-				hasReferer = true
-				break
-			}
-		}
-		if !hasReferer {
-			headerArgs = append(headerArgs, "Referer: "+ref)
-		}
-	}
-	for _, h := range headerArgs {
-		args = append(args, "-H", h)
-	}
-	// 分片下载阶段必须有字节落地；10 秒一点没动就交给 yt-dlp，不陪它慢慢超时。
-	return a.runExternalWatched(rs, reExe, args, rs.logPath, reStallAfter, []string{downloadDir, tmpDir})
+	return next, true
 }
 
-// runYtdlp 用 yt-dlp --impersonate chrome 下载到任务 staging。
-// 处理两类：过 CF 盾的降级下载、网页地址（由 yt-dlp 自行解析站点视频）。
-func (a *App) runYtdlp(rs *runState, t *Task, downloadDir string) error {
-	yt := a.toolYtdlp()
-	if yt == "" {
-		return fmt.Errorf("未找到 yt-dlp，请在设置里指定它的路径")
+// fallbackMessage 生成切换引擎时卡片上的一句话。
+func (a *App) fallbackMessage(from, to engine.Downloader, err error, logPath string) string {
+	switch {
+	case errors.Is(err, engine.ErrStalled):
+		return fmt.Sprintf("%s 超过 %d 秒没有下载进展，切换 %s 引擎",
+			from.Label(), int(from.Stall().Seconds()), to.Label())
+	case logShowsCloudflare(logPath):
+		return fmt.Sprintf("被 Cloudflare 拦截，切换 %s 引擎", to.Label())
+	default:
+		return fmt.Sprintf("%s 下载失败，切换 %s 引擎", from.Label(), to.Label())
 	}
-	if st, err := os.Stat(yt); err != nil || st.IsDir() {
-		return fmt.Errorf("yt-dlp 不在指定位置: %s", yt)
-	}
-	threads := strconv.Itoa(normalizeThreadCount(t.threadCount))
-	args := []string{
-		t.URL,
-		"--impersonate", "chrome", // curl_cffi Chrome TLS 指纹
-		"--merge-output-format", "mp4",
-		"-P", downloadDir,
-		"-o", stagedName + ".%(ext)s",
-		"--newline", // 进度逐行输出，便于解析
-		"--no-playlist",
-		"-N", threads, // 分片并发与 RE 使用同一设置
-		// 连接/读取卡住时别无限等：10 秒没有数据就断开重试，
-		// 否则站点半死不活时任务会永远停在 0%。
-		"--socket-timeout", "10",
-	}
-	// 显式指定自带 ffmpeg，避免依赖系统 PATH 或别的软件装的那份。
-	if dir := a.toolFFmpegDir(); dir != "" {
-		args = append(args, "--ffmpeg-location", dir)
-	}
-	// yt-dlp（curl_cffi）不会自动读 Windows 的"系统代理"设置，
-	// 用户开着代理时它会直连，于是报 TLS connect error。
-	// RE 走 .NET 默认代理是通的，两边行为必须对齐。
-	if proxy := systemProxy(); proxy != "" {
-		args = append(args, "--proxy", proxy)
-		appendLog(rs.logPath, "[HLSink] 使用系统代理 "+proxy)
-	}
-	// Referer 为空就不伪造，交给站点默认行为。
-	if ref := cleanHeaderValue(t.Referer); ref != "" {
-		args = append(args, "--referer", ref)
-	}
-	ua, extra := splitHeadersForYtdlp(t.Headers)
-	if ua != "" {
-		args = append(args, "--user-agent", ua)
-	}
-	for _, h := range extra {
-		args = append(args, "--add-header", h)
-	}
-	err := a.runExternalWatched(rs, yt, args, rs.logPath, ytdlpStallAfter, []string{downloadDir})
-	if errors.Is(err, errStalled) {
-		return fmt.Errorf("yt-dlp 超过 %d 秒没有下载进展", int(ytdlpStallAfter.Seconds()))
+}
+
+// explainEngineError 把引擎内部错误翻译成用户能理解的一句话。
+func (a *App) explainEngineError(d engine.Downloader, err error) error {
+	if errors.Is(err, engine.ErrStalled) {
+		return fmt.Errorf("%s 超过 %d 秒没有下载进展", d.Label(), int(d.Stall().Seconds()))
 	}
 	return err
 }
 
-// doTranscode 用 ffmpeg 转 HEVC（NVENC），返回成品路径。
+// doTranscode 用注册的后处理工具转码，返回成品路径。
 func (a *App) doTranscode(rs *runState, t *Task, src string) (string, error) {
-	ff := a.toolFFmpeg()
-	if ff == "" {
-		return "", fmt.Errorf("未找到 ffmpeg，请在设置里指定它的路径")
+	tr := engine.GetTranscoder()
+	if tr == nil {
+		return "", fmt.Errorf("没有可用的转码工具")
 	}
-	if st, err := os.Stat(ff); err != nil || st.IsDir() {
-		return "", fmt.Errorf("ffmpeg 不在指定位置: %s", ff)
+	exe, err := engine.Executable(a.toolMap()[tr.Key()], tr.Binary(), tr.Label())
+	if err != nil {
+		return "", err
 	}
 	outDir := filepath.Join(t.WorkDir, "transcode")
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
@@ -706,16 +545,20 @@ func (a *App) doTranscode(rs *runState, t *Task, src string) (string, error) {
 	base := strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))
 	out := filepath.Join(outDir, base+"_HEVC.mp4")
 
-	args := []string{
-		"-y", "-hide_banner", "-nostdin",
-		"-i", src,
-		"-c:v", "hevc_nvenc", "-preset", "p5", "-cq", "23",
-		"-c:a", "copy",
-		"-movflags", "+faststart",
-		out,
+	cmd, err := tr.Build(src, out)
+	if err != nil {
+		return "", err
 	}
-	logPath := filepath.Join(t.WorkDir, "logs", "run-"+rs.runID+"-ffmpeg.log")
-	if err := a.runExternal(rs, ff, args, logPath); err != nil {
+	cmd.Exe = exe
+
+	logPath := filepath.Join(t.WorkDir, "logs", "run-"+rs.runID+"-"+tr.Key()+".log")
+	// 不设 Idle：转码没有「字节落盘增长」这种可观测的中间进度，
+	// 硬加看门狗会把正常的慢速转码误杀。
+	if err := engine.Run(rs.ctx, engine.RunOpts{
+		Command: cmd,
+		LogPath: logPath,
+		Procs:   rs.procs,
+	}); err != nil {
 		return "", err
 	}
 	st, err := os.Stat(out)
@@ -725,215 +568,33 @@ func (a *App) doTranscode(rs *runState, t *Task, src string) (string, error) {
 	return out, nil
 }
 
-// runExternal 启动外部进程，输出追加写入日志；进程登记到 runState 以便被杀。
-func (a *App) runExternal(rs *runState, exe string, args []string, logPath string) error {
-	return a.runExternalWatched(rs, exe, args, logPath, 0, nil)
-}
-
-// runExternalWatched 在 runExternal 基础上加一个「停滞看门狗」。
-//
-// idle > 0 且给出 probes 目录时，每 stallProbeInterval 采样一次这些目录的
-// 总字节数：连续 idle 时长没有任何变化（下载引擎既不写分片也不写成品），
-// 就杀掉进程并返回 errStalled。判据用磁盘上真实落地的字节，而不是解析
-// 控制台输出——RE 在解析清单、重试分片时都可能长时间不打印进度。
-//
-// idle <= 0 时行为与 runExternal 完全一致（转码/封面等不需要这套）。
-func (a *App) runExternalWatched(rs *runState, exe string, args []string, logPath string, idle time.Duration, probes []string) error {
-	if rs.ctx.Err() != nil {
-		return errCancelled
-	}
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
-		return fmt.Errorf("创建日志目录失败: %w", err)
-	}
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return fmt.Errorf("打开日志文件失败: %w", err)
-	}
-	defer func() { _ = logFile.Close() }()
-
-	cmd := exec.Command(exe, args...)
-	hideWindow(cmd)
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
-
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("启动 %s 失败: %w", filepath.Base(exe), err)
-	}
-	rs.track(cmd)
-
-	// ---- 停滞看门狗 ----
-	var (
-		stopWatch chan struct{}
-		watchDone chan struct{}
-		stalled   bool
-		stalledMu sync.Mutex
-	)
-	if idle > 0 && len(probes) > 0 {
-		stopWatch = make(chan struct{})
-		watchDone = make(chan struct{})
-		go func() {
-			defer close(watchDone)
-			ticker := time.NewTicker(stallProbeInterval)
-			defer ticker.Stop()
-
-			last := dirBytes(probes...)
-			lastMove := time.Now()
-			for {
-				select {
-				case <-stopWatch:
-					return
-				case <-ticker.C:
-				}
-				cur := dirBytes(probes...)
-				if cur != last {
-					// 字节数变化（含分片被清理导致的减少）都算在动。
-					last, lastMove = cur, time.Now()
-					continue
-				}
-				if time.Since(lastMove) >= idle {
-					stalledMu.Lock()
-					stalled = true
-					stalledMu.Unlock()
-					killTree(cmd.Process)
-					return
-				}
-			}
-		}()
-	}
-
-	waitErr := cmd.Wait()
-	rs.untrack(cmd)
-	if stopWatch != nil {
-		close(stopWatch)
-		<-watchDone
-	}
-
-	stalledMu.Lock()
-	wasStalled := stalled
-	stalledMu.Unlock()
-
-	if wasStalled && waitErr != nil && rs.ctx.Err() == nil {
-		return errStalled
-	}
-	if waitErr != nil {
-		if rs.ctx.Err() != nil {
-			return errCancelled
-		}
-		return fmt.Errorf("%s 退出异常: %w", filepath.Base(exe), waitErr)
-	}
-	return nil
-}
-
-// appendLog 往 run 日志追加一行诊断信息。
-// 解析器只认 RE / yt-dlp 的进度行，认不出的行会被忽略，不会干扰进度。
-func appendLog(path, line string) {
-	if path == "" {
-		return
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return
-	}
-	_, _ = f.WriteString(line + "\n")
-	_ = f.Close()
-}
-
-// dirBytes 统计若干目录下所有文件的字节总和（目录不存在按 0 计）。
-//
-// 注意：这里必须对每个文件调用 os.Stat，不能直接用 WalkDir 拿到的
-// DirEntry.Info()。后者走的是目录枚举（FindFirstFile），Windows 上正在被
-// 写入的文件，其目录项大小可能长时间停留在旧值甚至 0，会把「正在下载」
-// 误判成「停滞」。os.Stat 走文件句柄查询，拿到的是实时大小。
-func dirBytes(dirs ...string) int64 {
-	var total int64
-	for _, dir := range dirs {
-		_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
-			if err != nil || d == nil || d.IsDir() {
-				return nil
-			}
-			if info, ierr := os.Stat(p); ierr == nil {
-				total += info.Size()
-			}
-			return nil
-		})
-	}
-	return total
-}
-
-// ---- 请求头处理 ----
-
-// headerLines 生成 RE 使用的 "-H Key: Value" 行（按 key 排序保证可复现）。
-func headerLines(headers map[string]string) []string {
-	if len(headers) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, len(headers))
-	for k := range headers {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	out := make([]string, 0, len(keys))
-	for _, k := range keys {
-		v := cleanHeaderValue(headers[k])
-		if v == "" {
-			continue
-		}
-		out = append(out, k+": "+v)
-	}
-	return out
-}
-
-// splitHeadersForYtdlp 拆出 User-Agent（单独传）与需要通过 --add-header 传的头。
-// Referer 由 --referer 传，避免与站点默认行为冲突。
-func splitHeadersForYtdlp(headers map[string]string) (ua string, extra []string) {
-	if len(headers) == 0 {
-		return "", nil
-	}
-	keys := make([]string, 0, len(headers))
-	for k := range headers {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		v := cleanHeaderValue(headers[k])
-		if v == "" {
-			continue
-		}
-		switch {
-		case strings.EqualFold(k, "User-Agent"):
-			ua = v
-		case strings.EqualFold(k, "Referer"):
-			// 交给 --referer
-		default:
-			extra = append(extra, k+": "+v)
-		}
-	}
-	return ua, extra
-}
-
-// cleanHeaderValue 过滤换行/控制字符，防止 header injection。
-func cleanHeaderValue(v string) string {
-	if v == "" {
-		return ""
-	}
-	var b strings.Builder
-	for _, r := range v {
-		switch {
-		case r == '\r' || r == '\n' || r == '\t':
-			b.WriteRune(' ')
-		case r < 0x20 || r == 0x7f:
-			continue
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return strings.TrimSpace(b.String())
-}
-
 // ---- 日志进度解析 ----
+
+// applyProgress 解析一段进度文本并写回任务。
+//
+// RE 用 \r 原地刷写，一段文本里可能挤着十几条进度，最后一条才是最新的，
+// 所以倒序找「第一条能解析的行」，命中即停——避免同一批数据触发多次状态更新。
+func (a *App) applyProgress(taskID, runID string, d engine.Downloader, text string) {
+	lines := strings.FieldsFunc(text, func(r rune) bool { return r == '\r' || r == '\n' })
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		p, ok := d.ParseLine(line)
+		if !ok {
+			continue
+		}
+		a.mutateRun(taskID, runID, func(t *Task) {
+			t.Progress = p.Percent
+			t.Speed = p.Speed
+			if p.Segments != "" {
+				t.Segments = p.Segments
+			}
+		})
+		return
+	}
+}
 
 // tailRunLog 轮询日志增量并交给 parse 解析。
 //
@@ -1007,96 +668,6 @@ func (a *App) tailRunLog(ctx context.Context, taskID, runID, path string, parse 
 		if text != "" {
 			parse(text)
 		}
-	}
-}
-
-// applyREProgress 解析 RE 的进度行（\r 原地刷写，取最后一段有效行）。
-func (a *App) applyREProgress(taskID, runID, text string) {
-	parts := strings.FieldsFunc(text, func(r rune) bool { return r == '\r' || r == '\n' })
-	for i := len(parts) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(parts[i])
-		if line == "" {
-			continue
-		}
-		p, speed, seg, ok := parseRELine(line)
-		if !ok {
-			continue
-		}
-		a.mutateRun(taskID, runID, func(t *Task) {
-			t.Progress = p
-			t.Speed = speed
-			if seg != "" {
-				t.Segments = seg
-			}
-		})
-		return
-	}
-}
-
-// parseRELine 从 RE 进度行里抓百分比、速度、分片数。
-func parseRELine(line string) (float64, string, string, bool) {
-	idx := strings.Index(line, "%")
-	if idx < 0 || idx > 12 {
-		return 0, "", "", false
-	}
-	var p float64
-	if _, err := fmt.Sscanf(strings.TrimSpace(line[:idx]), "%f", &p); err != nil {
-		return 0, "", "", false
-	}
-	if p < 0 || p > 100 {
-		return 0, "", "", false
-	}
-	speed := ""
-	if i := strings.Index(line, "Bps"); i > 0 {
-		if start := strings.LastIndex(line[:i], " "); start >= 0 {
-			speed = strings.TrimSpace(line[start : i+3])
-		}
-	}
-	seg := ""
-	if m := reFrag.FindStringSubmatch(line); m != nil {
-		seg = m[1] + "/" + m[2]
-	}
-	return p, speed, seg, true
-}
-
-// applyYtdlpProgress 解析 yt-dlp --newline 的进度行：
-// "[download]  42.3% of 123.45MiB at 2.5MiB/s ETA 00:42"
-func (a *App) applyYtdlpProgress(taskID, runID, text string) {
-	const prefix = "[download]"
-	for _, raw := range strings.Split(text, "\n") {
-		line := strings.TrimSpace(raw)
-		if !strings.HasPrefix(line, prefix) {
-			continue
-		}
-		idx := strings.Index(line, "%")
-		if idx <= len(prefix) {
-			continue
-		}
-		var p float64
-		if _, err := fmt.Sscanf(strings.TrimSpace(line[len(prefix):idx]), "%f", &p); err != nil {
-			continue
-		}
-		if p < 0 || p > 100 {
-			continue
-		}
-		speed := ""
-		if i := strings.Index(line, " at "); i > 0 {
-			speed = strings.TrimSpace(line[i+4:])
-			if j := strings.Index(speed, " ETA"); j > 0 {
-				speed = strings.TrimSpace(speed[:j])
-			}
-		}
-		seg := ""
-		if m := reFrag2.FindStringSubmatch(line); m != nil {
-			seg = m[1] + "/" + m[2]
-		}
-		a.mutateRun(taskID, runID, func(t *Task) {
-			t.Progress = p
-			t.Speed = speed
-			if seg != "" {
-				t.Segments = seg
-			}
-		})
 	}
 }
 

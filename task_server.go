@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"hlsink/internal/engine"
 )
 
 // listenPort 本地 HTTP 端口（扩展固定连这个端口）。
@@ -267,13 +269,14 @@ func normalizeTaskRequest(req *TaskRequest) (*taskInput, error) {
 	// 格式：优先用客户端提示，否则按 URL 后缀判定；显式传入非法值直接报错，避免静默降级。
 	kind := ""
 	if raw := strings.TrimSpace(req.Kind); raw != "" {
-		kind = normalizeStreamKind(raw)
-		if !isKnownStreamKind(kind) {
+		k := engine.NormalizeKind(raw)
+		if !k.Known() {
 			return nil, fmt.Errorf("不支持的源格式: %s（仅支持 hls / dash / page）", raw)
 		}
+		kind = string(k)
 	}
 	if kind == "" {
-		kind = detectStreamKind(rawURL)
+		kind = string(engine.DetectKind(rawURL))
 	}
 
 	headers, err := sanitizeHeaders(req.Headers)
@@ -322,7 +325,7 @@ func sanitizeHeaders(in map[string]string) (map[string]string, error) {
 		if key == "" || len(key) > maxHeaderNameLen || !isHeaderToken(key) {
 			continue // 静默丢弃非法头名，不因噪音导致整单失败
 		}
-		val := cleanHeaderValue(v)
+		val := engine.CleanHeaderValue(v)
 		if val == "" {
 			continue
 		}
