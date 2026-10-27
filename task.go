@@ -684,8 +684,9 @@ func (a *App) DeleteTask(id string) error {
 	a.mu.Lock()
 	t, ok := a.tasks[id]
 	if !ok {
+		// 已经删掉了（可能是后台清理刚刚完成），对用户来说就是成功。
 		a.mu.Unlock()
-		return fmt.Errorf("任务不存在: %s", id)
+		return nil
 	}
 	if t.Status == statusDeleting {
 		a.mu.Unlock()
@@ -747,13 +748,26 @@ func (a *App) DeleteTask(id string) error {
 		a.mutate(id, nil, func(x *Task) {
 			x.Status = statusCleanupFailed
 			x.Error = msg
-			x.Message = "清理失败: " + msg
+			// 卡片上别甩一长串 unlink 报错，用户只需要知道"还在处理"。
+			x.Message = "文件被占用，正在后台清理"
 			x.Speed = ""
 		})
-		return fmt.Errorf("清理未完成: %s", msg)
+		// 失败大概率是句柄还没释放（Windows 上很常见），后台再收拾几轮，
+		// 成功后直接把任务从列表移除，用户不用盯着这行红字再点一次。
+		a.scheduleLateCleanup(id, workDir, outPath, dlPath, saveDir)
+		// 对用户而言这次删除已经受理了：任务已经从"下载中"变成"清理中"，
+		// 后台会继续删。不返回错误，避免弹一个"删除失败"然后又自己消失。
+		return nil
 	}
 
+	a.finalizeRemove(id)
+	return nil
+}
+
+// finalizeRemove 把任务从内存列表移除并通知前端。可重复调用（幂等）。
+func (a *App) finalizeRemove(id string) {
 	a.mu.Lock()
+	_, exists := a.tasks[id]
 	delete(a.tasks, id)
 	delete(a.runs, id)
 	for i, x := range a.order {
@@ -764,6 +778,45 @@ func (a *App) DeleteTask(id string) error {
 	}
 	a.mu.Unlock()
 
-	a.emit("task-removed", id)
-	return nil
+	if exists {
+		a.emit("task-removed", id)
+	}
+}
+
+// scheduleLateCleanup 删除失败后在后台继续收拾残局。
+//
+// 典型现场：yt-dlp 的 download.mp4.part 刚被 taskkill 结束，句柄还挂在
+// 系统里（杀软/索引也会短暂占用），几秒后再删就干净了。这里按递增间隔
+// 重试，全部成功才把任务移出列表，避免"任务没了但垃圾还在"。
+func (a *App) scheduleLateCleanup(id, workDir, outPath, dlPath, saveDir string) {
+	go func() {
+		for _, wait := range []time.Duration{3 * time.Second, 7 * time.Second, 15 * time.Second, 30 * time.Second} {
+			time.Sleep(wait)
+			// 任务已被别的路径删掉（用户又点了一次删除）就不再处理。
+			if a.taskSnapshot(id) == nil {
+				return
+			}
+			if err := removeWorkDir(workDir); err != nil {
+				continue
+			}
+			if err := removeOutputFile(outPath, saveDir); err != nil {
+				continue
+			}
+			if dlPath != "" && !samePath(dlPath, outPath) {
+				if err := removeOutputFile(dlPath, workDir); err != nil {
+					continue
+				}
+			}
+			a.finalizeRemove(id)
+			return
+		}
+		// 四轮都没删掉：把文案切回"需要人工再点一次"，任务仍留在列表里，
+		// 绝不假装删成功（文件确实还在）。
+		if a.taskSnapshot(id) != nil {
+			a.mutate(id, nil, func(x *Task) {
+				x.Status = statusCleanupFailed
+				x.Message = "文件被占用，自动清理失败，可再次点击重试"
+			})
+		}
+	}()
 }

@@ -112,7 +112,7 @@ const statusText = {
   transcoding: '转码中',
   deleting: '删除中',
   paused: '已暂停',
-  cleanup_failed: '清理失败',
+  cleanup_failed: '清理中',
   done: '完成',
   error: '失败',
 };
@@ -719,12 +719,14 @@ function updateCard(card, t) {
   const localErr = state.actionError.get(id) || '';
   const serverErr = t.error ? String(t.error) : '';
   const messageErr = status === 'error' || status === 'cleanup_failed' ? String(t.message || '') : '';
-  let errText = localErr || serverErr || messageErr;
-  if (!errText && status === 'cleanup_failed') errText = '文件清理失败，残留文件仍在，可重试删除';
+  // cleanup_failed 时优先展示后端给的短文案（"文件被占用，正在后台清理"），
+  // 那条 unlink 长报错只放到 title 里，别糊在卡片上。
+  let errText = localErr || messageErr || serverErr;
+  if (!errText && status === 'cleanup_failed') errText = '文件被占用，正在后台清理';
   const errBox = /** @type {HTMLElement} */ (card.querySelector('.task-err'));
   if (errText) {
     if (errBox.textContent !== errText) errBox.textContent = errText;
-    errBox.title = errText;
+    errBox.title = status === 'cleanup_failed' && serverErr ? serverErr : errText;
     errBox.style.display = '';
   } else {
     errBox.style.display = 'none';
@@ -1831,8 +1833,7 @@ EventsOn('task-updated', (t) => {
   const nextStatus = safeStatus(t.status);
   if (nextStatus === 'cleanup_failed' && prevStatus !== 'cleanup_failed') {
     const name = String(t.title || t.filename || '任务');
-    const detail = t.error ? '：' + String(t.error) : '';
-    showToast('「' + name + '」清理失败' + detail + '，可再次点击删除重试', 'error');
+    showToast('「' + name + '」的文件还被占用，正在后台清理，稍后自动消失', 'info');
   }
   if (nextStatus !== 'error' && nextStatus !== 'cleanup_failed') state.actionError.delete(t.id);
   refresh();

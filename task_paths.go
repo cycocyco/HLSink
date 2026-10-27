@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 )
 
@@ -395,6 +396,55 @@ func samePath(a, b string) bool {
 	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
 }
 
+// removeRetryDelays 删除失败后的重试退避，累计约 1.1 秒。
+//
+// Windows 上没有"标记删除"这回事：只要还有任何句柄没关，DeleteFile 立刻
+// 返回 "the file is being used by another process"。刚被 taskkill 结束的
+// 进程、杀毒软件、Windows 搜索索引都有可能晚几十毫秒到一两秒才松手。
+//
+// 这里只做短促重试（删除是同步 RPC，卡太久用户会以为软件死了）；
+// 仍然失败就交给 DeleteTask 的后台清理按分钟级继续重试。
+var removeRetryDelays = []time.Duration{
+	60 * time.Millisecond,
+	120 * time.Millisecond,
+	200 * time.Millisecond,
+	300 * time.Millisecond,
+	400 * time.Millisecond,
+}
+
+// removeAllRetry 带退避重试地删除整个目录树。不存在视为成功。
+func removeAllRetry(path string) error {
+	var err error
+	for _, d := range removeRetryDelays {
+		err = os.RemoveAll(path)
+		if err == nil || os.IsNotExist(err) {
+			return nil
+		}
+		time.Sleep(d)
+	}
+	// 最后一击：前面的退避期间占用可能刚好释放。
+	if err = os.RemoveAll(path); err == nil || os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+// removeFileRetry 带退避重试地删除单个文件。不存在视为成功。
+func removeFileRetry(path string) error {
+	var err error
+	for _, d := range removeRetryDelays {
+		err = os.Remove(path)
+		if err == nil || os.IsNotExist(err) {
+			return nil
+		}
+		time.Sleep(d)
+	}
+	if err = os.Remove(path); err == nil || os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
 // removeWorkDir 物理删除任务工作目录。
 //
 // 严格校验：必须是 app work root 下的一级任务目录，且不等于 work root 本身。
@@ -414,7 +464,7 @@ func removeWorkDir(dir string) error {
 	if !samePath(filepath.Dir(clean), root) {
 		return fmt.Errorf("拒绝删除非任务级工作目录: %s", clean)
 	}
-	if err := os.RemoveAll(clean); err != nil && !os.IsNotExist(err) {
+	if err := removeAllRetry(clean); err != nil {
 		return fmt.Errorf("删除工作目录失败(%s): %w", clean, err)
 	}
 	return nil
@@ -448,7 +498,7 @@ func removeOutputFile(path, allowedRoot string) error {
 	if info.IsDir() {
 		return fmt.Errorf("路径是目录，拒绝删除: %s", clean)
 	}
-	if err := os.Remove(clean); err != nil {
+	if err := removeFileRetry(clean); err != nil {
 		return fmt.Errorf("删除文件失败(%s): %w", clean, err)
 	}
 	return nil
