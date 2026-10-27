@@ -14,17 +14,20 @@
 
 下载、合并、转码全是别人的工具，这个项目只负责把它们串起来，加一个自己画的界面。
 
-## 用之前得自己准备三个工具
+## 用之前得自己准备几个工具
 
-程序里不带引擎，这三个自己下好放进来（放 exe 旁边的 `tools/`、`deps/`、`bin/` 都行，也可以在设置里直接指路径）：
+程序里不带引擎，这些自己下好放进来（放 exe 旁边的 `tools/`、`deps/`、`bin/` 都行，也可以在设置里直接指路径）：
 
 | 工具 | 管什么 | 缺了会怎样 |
 |---|---|---|
 | `N_m3u8DL-RE.exe` | HLS / DASH 分片下载 | 下不了，会明确提示你没找到 |
 | `yt-dlp.exe` | 网页解析、Cloudflare 兜底 | 只能下直链，网页地址没法处理 |
 | `ffmpeg.exe` | 合并音视频、转 HEVC | 不能转码；yt-dlp 那条分支也用不了 |
+| `tdl.exe` | Telegram 消息下载 | Telegram 链接下不了，别的功能不受影响 |
 
-三个都能留空自动探测，顺序是 exe 旁的 `tools` → `deps` → `bin`，最后查系统 PATH。
+都能留空自动探测，顺序是 exe 旁的 `tools` → `deps` → `bin`，最后查系统 PATH。
+
+前两个是主力，`re` 下不动会自己切到 `yt-dlp`；`tdl` 是条独立支线，只处理 `t.me` 链接，跟那条降级链没关系。
 
 ## 怎么用
 
@@ -32,7 +35,24 @@
 2. Edge / Chrome 装 `extension/` 里的扩展（开发者模式 → 加载解压的扩展）
 3. 在网页上播视频，点扩展图标，它会列出嗅到的流，选一个丢给程序
 
-不想装扩展也行，主界面的「添加链接」可以直接粘地址：网页地址、`.m3u8`、`.mpd` 都吃。
+不想装扩展也行，主界面的「添加链接」可以直接粘地址：网页地址、`.m3u8`、`.mpd`、`t.me` 都吃。具体交给哪个引擎由程序按链接判断，不用你选。
+
+## Telegram 怎么用
+
+`tdl` 要登录一次才能下东西，而它的登录是交互式的（要按方向键选账号），所以得在命令行做一次：
+
+```
+& "路径\tdl.exe" login -d "你的 Telegram Desktop 目录" --proxy socks5://127.0.0.1:7897
+```
+
+- `-d` 指到 Telegram Desktop 的安装目录（或者直接用 `tdl login -T qr` 扫码）
+- AyuGram / Nekogram 这类第三方分支也能用，它们的 `tdata` 跟官方同一套格式
+- 走 `--proxy`：Telegram 的 DC 直连不通，必须挂代理
+- 看到 `Choose a user id` 时按回车选默认那个，成功后会话存进 `~/.tdl`
+
+登录成功后，在「添加链接」里粘 Telegram 消息的分享链接（`https://t.me/频道/消息ID`）就行，`?single` 这类参数不用手动去掉。
+
+注意两点：下载流量全程走你的代理（机场额度照扣）；暂停 = 从头重下，因为它只做文件级断点，单个大文件下到一半停下就白下了。
 
 ## 点 ❌ 不等于退出
 
@@ -122,6 +142,7 @@ HLSink/
 │   ├── headers.go          # 请求头清洗
 │   ├── downloader_re.go    # N_m3u8DL-RE
 │   ├── downloader_ytdlp.go # yt-dlp
+│   ├── downloader_tdl.go   # tdl（Telegram）
 │   └── transcoder_ffmpeg.go# ffmpeg
 ├── protocol_windows.go     # 注册 hlsink:// 协议
 ├── frontend/dist/          # 前端源码（就是发布文件，没有编译步骤）
@@ -134,7 +155,7 @@ HLSink/
 └── build/                  # 图标与清单
 ```
 
-外部工具的调用全部关在 `internal/engine` 里，编排层（`task_runner.go`）不出现任何具体工具的参数。想接第四个工具（比如 tdl、aria2）：
+外部工具的调用全部关在 `internal/engine` 里，编排层（`task_runner.go`）不出现任何具体工具的参数。tdl 就是这么接进来的，全程没动编排逻辑。想再接一个（比如 aria2）只需三步：
 
 1. 新建一个 `internal/engine/downloader_xxx.go`，实现 `Downloader` 那几个方法，`init()` 里 `Register(...)`
 2. `Settings` 加一个路径字段，`App.toolMap()` 补一行映射
