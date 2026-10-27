@@ -77,7 +77,14 @@ func (reEngine) Build(j Job, t Tools) (Command, error) {
 	if ref := CleanHeaderValue(j.Referer); ref != "" && !hasHeader(j.Headers, "Referer") {
 		args = append(args, "-H", "Referer: "+ref)
 	}
-	return Command{Args: args}, nil
+	// 显式指定代理。RE 默认 --use-system-proxy=true，但它读的是 .NET 的系统设置；
+	// 用户同时开了多个代理端口时，要靠设置页指定到底走哪个，这里透传即可。
+	var notes []string
+	if p := strings.TrimSpace(j.Proxy); p != "" {
+		args = append(args, "--custom-proxy", p)
+		notes = append(notes, "[HLSink] 使用代理 "+p)
+	}
+	return Command{Args: args, Notes: notes}, nil
 }
 
 // ParseLine 从 RE 的一行进度里抓百分比、速度、分片数。
