@@ -420,9 +420,9 @@ func (a *App) doDownload(rs *runState, taskID string) (string, error) {
 
 	first := true
 	for attempt := 1; ; attempt++ {
-		// 每次尝试前重新解析依赖：原实现里每个引擎启动前都会重读设置与系统代理，
-		// 用户在降级间隙改了代理或工具路径，下一次尝试应当用新值。
-		job.Proxy = systemProxy()
+		// 每次尝试前重新解析依赖与代理：用户在降级间隙改了代理或工具路径，
+		// 下一次尝试应当用新值（设置里手填的优先，留空才回落系统代理）。
+		job.Proxy = a.proxyURL()
 		tools = a.tools()
 
 		hint := ""
