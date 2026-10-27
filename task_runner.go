@@ -501,6 +501,8 @@ func (a *App) runEngine(rs *runState, d engine.Downloader, job engine.Job, tools
 // fallbackFor 判断当前引擎失败后是否值得换引擎再试，值得则返回下一个引擎。
 //
 // 判断条件（任一成立就换）：
+//   - 引擎根本没就绪（没配置、路径填错）——这不是"下载失败"，而是"这台机器上
+//     跑不了它"，换一个能跑的很可能会成功；
 //   - 看门狗认定它连续无进展（有下一级就早点换，别等它把每片都试到超时）；
 //   - 日志里出现明确的 Cloudflare 特征；
 //   - DASH 站点失败（分片格式兼容性问题居多）。
@@ -511,6 +513,10 @@ func (a *App) fallbackFor(kind engine.Kind, from engine.Downloader, err error, l
 	key := from.Fallback()
 	if key == "" || err == nil {
 		return nil, false
+	}
+	if engineUnavailable(err) {
+		next, ok := engine.Get(key)
+		return next, ok
 	}
 	stalled := errors.Is(err, engine.ErrStalled)
 	blocked := logShowsCloudflare(logPath)
@@ -524,9 +530,19 @@ func (a *App) fallbackFor(kind engine.Kind, from engine.Downloader, err error, l
 	return next, true
 }
 
+// engineUnavailable 判断错误是否属于「这个引擎在这台机器上跑不起来」，
+// 而不是「下载失败」。这类错误换引擎几乎必然能过，所以不设 DASH/CF 门槛。
+func engineUnavailable(err error) bool {
+	var missing *engine.MissingError
+	var wrong *engine.WrongPathError
+	return errors.As(err, &missing) || errors.As(err, &wrong)
+}
+
 // fallbackMessage 生成切换引擎时卡片上的一句话。
 func (a *App) fallbackMessage(from, to engine.Downloader, err error, logPath string) string {
 	switch {
+	case engineUnavailable(err):
+		return fmt.Sprintf("%s 未就绪，改用 %s 引擎", from.Label(), to.Label())
 	case errors.Is(err, engine.ErrStalled):
 		return fmt.Sprintf("%s 超过 %d 秒没有下载进展，切换 %s 引擎",
 			from.Label(), int(from.Stall().Seconds()), to.Label())
