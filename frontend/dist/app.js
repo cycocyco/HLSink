@@ -273,6 +273,37 @@ function showToast(message, kind = 'info') {
 let activeDialog = null;
 
 /**
+ * 弹出层退场：卡片先收、幕布后淡，播完再摘节点。
+ *
+ * 关键点是「调用方不等动画」——resolve 已经在动画开始前完成，
+ * 业务逻辑立刻继续，用户看到的是动画和后续操作并行。
+ * @param {HTMLElement} mask
+ */
+function dismissModal(mask) {
+  if (!mask || mask.dataset.closing === '1') return;
+  mask.dataset.closing = '1';
+  const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (reduce) {
+    mask.remove();
+    return;
+  }
+  mask.classList.add('is-closing');
+  let dropped = false;
+  const drop = () => {
+    if (dropped) return;
+    dropped = true;
+    mask.remove();
+  };
+  mask.addEventListener('animationend', (e) => {
+    // 只认退场那条动画。开场的 veil-in 也会在 mask 上触发 animationend，
+    // 若用户在开场动画没播完时就关掉，会被误判成「退场结束」而瞬间消失。
+    if (e.target === mask && e.animationName === 'veil-out') drop();
+  });
+  // 兜底：标签页在后台时 animationend 可能不触发
+  window.setTimeout(drop, 600);
+}
+
+/**
  * 二次确认对话框。
  * @param {{title: string, message: string, confirmText?: string, cancelText?: string, danger?: boolean}} opts
  * @returns {Promise<boolean>} 用户确认返回 true
@@ -317,10 +348,12 @@ function confirmDialog(opts) {
     const close = (value) => {
       if (settled) return;
       settled = true;
+      // 先解绑键盘，避免退场期间还能按 Enter 二次触发
       document.removeEventListener('keydown', onKeyDown, true);
-      if (mask.parentNode) mask.parentNode.removeChild(mask);
       if (activeDialog && activeDialog.mask === mask) activeDialog = null;
+      // 先兑现 Promise，业务立刻继续；节点等退场动画播完再摘
       resolve(value);
+      dismissModal(mask);
     };
     const onKeyDown = (e) => {
       if (e.key === 'Escape') {
@@ -397,10 +430,12 @@ function inputDialog(opts) {
     const close = (value) => {
       if (settled) return;
       settled = true;
+      // 先解绑键盘，避免退场期间还能按 Enter 二次触发
       document.removeEventListener('keydown', onKeyDown, true);
-      if (mask.parentNode) mask.parentNode.removeChild(mask);
       if (activeDialog && activeDialog.mask === mask) activeDialog = null;
+      // 先兑现 Promise，业务立刻继续；节点等退场动画播完再摘
       resolve(value);
+      dismissModal(mask);
     };
     const submit = () => {
       const text = input.value.trim();
@@ -509,75 +544,133 @@ function actionButton(opts) {
 }
 
 /**
- * 构造单张任务卡片。
- * @param {object} t
+ * 创建一张任务卡片的固定骨架。
+ *
+ * 结构一次建好、此后永不变动，只由 updateCard 改内容。
+ * 这是「按 id 复用节点」的前提：节点不销毁，CSS 动画才不会反复重播。
+ * 所有可能出现的段落（路径 / 警告 / 错误）都先建好，用 display 控制显隐，
+ * 避免后续插入删除导致结构差异。
  * @returns {HTMLElement}
  */
-function buildCard(t) {
-  const id = t.id;
-  const status = effectiveStatus(t);
-  const busy = state.busy.has(id);
-  const locked = busy || status === 'deleting' || status === 'pausing';
-  const info = progressInfo(t.progress);
-  const label = statusText[safeStatus(status)] || safeStatus(status);
+function createCard() {
+  const card = el('div', 'task-card');
 
-  const card = el('div', 'task-card' + (status === 'deleting' ? ' is-deleting' : '') + (status === 'cleanup_failed' ? ' is-failed' : ''));
-  card.dataset.id = id;
-
-  /* ---- 头部：状态标记 + 标题 + 状态 / 进度 + 文字操作 ---- */
   const head = el('div', 'task-head');
-  const mark = el('span', 'task-status-mark s-' + safeStatus(status));
-  mark.title = label;
-  mark.setAttribute('aria-label', label);
-  head.appendChild(mark);
-
+  const mark = el('span', 'task-status-mark');
   const title = el('span', 'task-title');
-  const fullName = String(t.title || t.filename || '未命名任务');
-  title.textContent = fullName;
-  title.title = t.url ? fullName + '\n' + String(t.url) : fullName;
-
-  const statusEl = el('span', 'task-status s-' + safeStatus(status));
-  const showPercent = status === 'running' || status === 'transcoding' || status === 'paused';
-  statusEl.textContent = showPercent ? label + ' ' + info.text : label;
+  const statusEl = el('span', 'task-status');
   const actions = el('div', 'task-actions');
-
-  if (status === 'running' || status === 'queued') {
-    actions.appendChild(actionButton({
-      act: 'pause',
-      label: '暂停',
-      title: busy ? '暂停请求处理中…' : '暂停下载',
-      disabled: locked,
-    }));
-  }
-  if (status === 'paused') {
-    actions.appendChild(actionButton({
-      act: 'resume',
-      label: '继续',
-      title: busy ? '继续请求处理中…' : '继续下载',
-      disabled: locked,
-    }));
-  }
-  if (status === 'cleanup_failed') {
-    actions.appendChild(actionButton({
-      act: 'delete',
-      label: '重试清理',
-      title: busy ? '正在重试删除…' : '重试删除（再次清理残留文件）',
-      danger: true,
-      disabled: busy,
-    }));
-  } else if (status !== 'deleting' && status !== 'pausing') {
-    actions.appendChild(actionButton({
-      act: 'delete',
-      label: '删除',
-      title: '永久删除（缓存、分片、原片、成品和日志）',
-      danger: true,
-      disabled: locked,
-    }));
-  }
-
+  head.appendChild(mark);
   head.appendChild(title);
   head.appendChild(statusEl);
   head.appendChild(actions);
+
+  const sub = el('div', 'task-sub');
+  const subLeft = el('span', 'task-sub-left');
+  const subRight = el('span', 'task-sub-right');
+  sub.appendChild(subLeft);
+  sub.appendChild(subRight);
+
+  const path = el('div', 'task-path');
+  const warnBox = el('div', 'task-warn');
+  const errBox = el('div', 'task-err');
+
+  const bar = el('div', 'task-bar');
+  const fill = el('div', 'task-bar-fill');
+  bar.appendChild(fill);
+
+  card.appendChild(head);
+  card.appendChild(sub);
+  card.appendChild(path);
+  card.appendChild(warnBox);
+  card.appendChild(errBox);
+  card.appendChild(bar);
+  return card;
+}
+
+/**
+ * 把任务快照写进卡片骨架。
+ *
+ * 只改文本、class 和可见性，绝不替换节点本身；写之前先比对，避免无谓的
+ * DOM 写入（高频进度刷新时这一点很关键，否则整段文本每帧都在重排）。
+ * @param {HTMLElement} card
+ * @param {object} t
+ */
+function updateCard(card, t) {
+  const id = t.id;
+  const status = effectiveStatus(t);
+  const safe = safeStatus(status);
+  const busy = state.busy.has(id);
+  const locked = busy || status === 'deleting' || status === 'pausing';
+  const info = progressInfo(t.progress);
+  const label = statusText[safe] || safe;
+
+  // 状态类逐个 toggle，不能用 className 整体覆盖：
+  // 否则会把正在播放的 is-entering / is-leaving 一起冲掉。
+  card.classList.toggle('is-deleting', status === 'deleting');
+  card.classList.toggle('is-failed', status === 'cleanup_failed');
+  // 只有真正在跑的（下载/转码）才让进度条流光，暂停和排队时保持静止
+  card.classList.toggle('is-transferring', status === 'running' || status === 'transcoding');
+
+  const mark = /** @type {HTMLElement} */ (card.querySelector('.task-status-mark'));
+  const markClass = 'task-status-mark s-' + safe;
+  if (mark.className !== markClass) mark.className = markClass;
+  mark.title = label;
+  mark.setAttribute('aria-label', label);
+
+  const title = /** @type {HTMLElement} */ (card.querySelector('.task-title'));
+  const fullName = String(t.title || t.filename || '未命名任务');
+  if (title.textContent !== fullName) title.textContent = fullName;
+  title.title = t.url ? fullName + '\n' + String(t.url) : fullName;
+
+  const statusEl = /** @type {HTMLElement} */ (card.querySelector('.task-status'));
+  const statusClass = 'task-status s-' + safe;
+  if (statusEl.className !== statusClass) statusEl.className = statusClass;
+  const showPercent = status === 'running' || status === 'transcoding' || status === 'paused';
+  const statusLine = showPercent ? label + ' ' + info.text : label;
+  if (statusEl.textContent !== statusLine) statusEl.textContent = statusLine;
+
+  // 操作按钮的组合只取决于状态与 busy，用签名判断要不要重建。
+  // 按钮最多两个，重建比逐个比对增删更不容易出错。
+  const actions = /** @type {HTMLElement} */ (card.querySelector('.task-actions'));
+  const sig = status + '|' + (busy ? 'b' : '');
+  if (actions.dataset.sig !== sig) {
+    actions.dataset.sig = sig;
+    actions.replaceChildren();
+    if (status === 'running' || status === 'queued') {
+      actions.appendChild(actionButton({
+        act: 'pause',
+        label: '暂停',
+        title: busy ? '暂停请求处理中…' : '暂停下载',
+        disabled: locked,
+      }));
+    }
+    if (status === 'paused') {
+      actions.appendChild(actionButton({
+        act: 'resume',
+        label: '继续',
+        title: busy ? '继续请求处理中…' : '继续下载',
+        disabled: locked,
+      }));
+    }
+    if (status === 'cleanup_failed') {
+      actions.appendChild(actionButton({
+        act: 'delete',
+        label: '重试清理',
+        title: busy ? '正在重试删除…' : '重试删除（再次清理残留文件）',
+        danger: true,
+        disabled: busy,
+      }));
+    } else if (status !== 'deleting' && status !== 'pausing') {
+      actions.appendChild(actionButton({
+        act: 'delete',
+        label: '删除',
+        title: '永久删除（缓存、分片、原片、成品和日志）',
+        danger: true,
+        disabled: locked,
+      }));
+    }
+  }
 
   /* ---- 元信息：引擎 / 分片 / 实时速度 ---- */
   const leftParts = [];
@@ -588,21 +681,23 @@ function buildCard(t) {
   const rightParts = [];
   if (status === 'running' && t.speed) rightParts.push(String(t.speed));
   if (status === 'transcoding') rightParts.push('转码中');
-  const sub = el('div', 'task-sub');
-  const subLeft = el('span', 'task-sub-left');
-  const subRight = el('span', 'task-sub-right');
-  subLeft.textContent = leftParts.join(' · ');
-  subRight.textContent = rightParts.join(' · ');
-  sub.appendChild(subLeft);
-  sub.appendChild(subRight);
+
+  const sub = /** @type {HTMLElement} */ (card.querySelector('.task-sub'));
+  const subLeft = /** @type {HTMLElement} */ (sub.querySelector('.task-sub-left'));
+  const subRight = /** @type {HTMLElement} */ (sub.querySelector('.task-sub-right'));
+  const leftText = leftParts.join(' · ');
+  const rightText = rightParts.join(' · ');
+  if (subLeft.textContent !== leftText) subLeft.textContent = leftText;
+  if (subRight.textContent !== rightText) subRight.textContent = rightText;
   sub.style.display = leftParts.length || rightParts.length ? '' : 'none';
 
   /* ---- 输出路径（成功任务）---- */
   const outPath = t.outputPath ? String(t.outputPath) : status === 'done' && t.message ? String(t.message) : '';
-  const path = el('div', 'task-path');
+  const path = /** @type {HTMLElement} */ (card.querySelector('.task-path'));
   if (outPath) {
-    path.textContent = outPath;
+    if (path.textContent !== outPath) path.textContent = outPath;
     path.title = outPath;
+    path.style.display = '';
   } else {
     path.style.display = 'none';
   }
@@ -610,10 +705,11 @@ function buildCard(t) {
   /* ---- 成功但带警告（如转码失败已保留原画） ---- */
   const doneWarn =
     status === 'done' && t.message && String(t.message) !== outPath ? String(t.message) : '';
-  const warnBox = el('div', 'task-warn');
+  const warnBox = /** @type {HTMLElement} */ (card.querySelector('.task-warn'));
   if (doneWarn) {
-    warnBox.textContent = doneWarn;
+    if (warnBox.textContent !== doneWarn) warnBox.textContent = doneWarn;
     warnBox.title = doneWarn;
+    warnBox.style.display = '';
   } else {
     warnBox.style.display = 'none';
   }
@@ -624,42 +720,86 @@ function buildCard(t) {
   const messageErr = status === 'error' || status === 'cleanup_failed' ? String(t.message || '') : '';
   let errText = localErr || serverErr || messageErr;
   if (!errText && status === 'cleanup_failed') errText = '文件清理失败，残留文件仍在，可重试删除';
-  const errBox = el('div', 'task-err');
+  const errBox = /** @type {HTMLElement} */ (card.querySelector('.task-err'));
   if (errText) {
-    errBox.textContent = errText;
+    if (errBox.textContent !== errText) errBox.textContent = errText;
     errBox.title = errText;
+    errBox.style.display = '';
   } else {
     errBox.style.display = 'none';
   }
 
   /* ---- 进度条 ---- */
-  const bar = el('div', 'task-bar');
+  const fill = /** @type {HTMLElement} */ (card.querySelector('.task-bar-fill'));
   let fillClass = 'task-bar-fill';
   if (status === 'done') fillClass += ' done';
   else if (status === 'paused') fillClass += ' paused';
   else if (status === 'error' || status === 'cleanup_failed') fillClass += ' failed';
-  const fill = el('div', fillClass);
-  fill.style.width = info.width;
-  bar.appendChild(fill);
+  if (fill.className !== fillClass) fill.className = fillClass;
+  if (fill.style.width !== info.width) fill.style.width = info.width;
+}
 
-  card.appendChild(head);
-  card.appendChild(sub);
-  card.appendChild(path);
-  card.appendChild(warnBox);
-  card.appendChild(errBox);
-  card.appendChild(bar);
-
-  card.querySelectorAll('.tbtn').forEach((btn) => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const act = btn.dataset.act;
-      if (act === 'pause') void handleTaskAction(t, 'pause');
-      else if (act === 'resume') void handleTaskAction(t, 'resume');
-      else if (act === 'delete') void handleDelete(t);
-    });
+/**
+ * 新卡片入场：只在这一张确实是新增时调用，因此动画必然只播一次。
+ * @param {HTMLElement} card
+ */
+function enterCard(card) {
+  card.classList.add('is-entering');
+  const clear = () => card.classList.remove('is-entering');
+  card.addEventListener('animationend', function onEnterEnd(e) {
+    if (e.target !== card) return;
+    card.removeEventListener('animationend', onEnterEnd);
+    clear();
   });
+  // 兜底：动画被降级成 none、或标签页切到后台导致 animationend 不触发时，
+  // class 会一直挂着。400ms 后无条件摘掉（动画本身只有 220ms）。
+  window.setTimeout(clear, 400);
+}
 
-  return card;
+/**
+ * 任务被真正删除：先把退场动画放完再摘节点。
+ *
+ * 有 600ms 兜底定时器，防止动效被系统降级（reduced-motion 下动画时长为
+ * 0.01ms 或直接 none）时 animationend 不触发，把节点永久留在 DOM 里。
+ * @param {HTMLElement} card
+ */
+function leaveCard(card) {
+  if (card.dataset.leaving === '1') return;
+  card.dataset.leaving = '1';
+  card.classList.add('is-leaving');
+  const drop = () => card.remove();
+  card.addEventListener('animationend', function onLeaveEnd(e) {
+    // 只看 card-out：刚入场就被删时，card-in 的结束事件会先冒上来
+    if (e.target !== card || e.animationName !== 'card-out') return;
+    card.removeEventListener('animationend', onLeaveEnd);
+    drop();
+  });
+  window.setTimeout(drop, 600);
+}
+
+/**
+ * 列表的点击委托：卡片会被复用，「构造时绑定闭包」会捕获过期的任务快照，
+ * 所以统一在这里按 data-id 取当前数据。
+ * @param {HTMLElement} list
+ */
+let taskListDelegated = false;
+function ensureTaskListDelegation(list) {
+  if (taskListDelegated) return;
+  taskListDelegated = true;
+  list.addEventListener('click', (e) => {
+    const btn = /** @type {HTMLElement} */ (e.target).closest('.tbtn');
+    if (!btn || !list.contains(btn)) return;
+    const card = btn.closest('.task-card');
+    if (!card) return;
+    const id = card.dataset.id || '';
+    const t = state.tasks.find((x) => x.id === id);
+    if (!t) return;
+    e.stopPropagation();
+    const act = btn.dataset.act;
+    if (act === 'pause') void handleTaskAction(t, 'pause');
+    else if (act === 'resume') void handleTaskAction(t, 'resume');
+    else if (act === 'delete') void handleDelete(t);
+  });
 }
 
 /** 更新筛选数量、当前摘要和筛选按钮选中态。 */
@@ -696,10 +836,60 @@ function updateTaskOverview() {
 function renderTasks() {
   const list = document.getElementById('task-list');
   if (!list) return;
+  ensureTaskListDelegation(list);
 
   const visible = visibleTasks();
-  list.querySelectorAll('.task-card').forEach((n) => n.remove());
+  const alive = new Set(state.tasks.map((t) => t.id));
+  const wanted = new Set(visible.map((t) => t.id));
 
+  /* 1) 收集现有卡片。正在退场的不参与复用，等它自己播完摘掉。 */
+  /** @type {Map<string, HTMLElement>} */
+  const existing = new Map();
+  list.querySelectorAll('.task-card').forEach((n) => {
+    const id = n.dataset.id;
+    if (id && n.dataset.leaving !== '1') existing.set(id, n);
+  });
+
+  /* 2) 不再展示的卡片：任务真的没了才播退场；只是被筛选掉就直接摘掉，
+        否则切个筛选也会满屏动画。 */
+  for (const [id, node] of existing) {
+    if (wanted.has(id)) continue;
+    existing.delete(id);
+    if (alive.has(id)) node.remove();
+    else leaveCard(node);
+  }
+
+  /* 3) 复用或新建，按数据顺序排好 */
+  const ordered = [];
+  for (const t of visible) {
+    let card = existing.get(t.id);
+    if (card) {
+      updateCard(card, t);
+    } else {
+      card = createCard();
+      card.dataset.id = t.id;
+      updateCard(card, t);
+      enterCard(card);
+    }
+    ordered.push(card);
+  }
+
+  /* 4) 顺序校正：只在真的错位时才 insertBefore。
+        无差别地重新 append 会让节点脱离文档，正在播放的动画会被打断重来。 */
+  const skipLeaving = (node) => {
+    let n = node;
+    while (n && n.dataset && n.dataset.leaving === '1') n = n.nextElementSibling;
+    return n;
+  };
+  let anchor = /** @type {?HTMLElement} */ (document.getElementById('empty-tip'));
+  for (const card of ordered) {
+    const next = skipLeaving(anchor ? anchor.nextElementSibling : list.firstElementChild);
+    const atEnd = next === null && card === list.lastElementChild;
+    if (next !== card && !atEnd) list.insertBefore(card, next);
+    anchor = card;
+  }
+
+  /* 5) 空状态提示 */
   const empty = document.getElementById('empty-tip');
   if (empty) {
     if (!state.tasks.length) {
@@ -715,9 +905,6 @@ function renderTasks() {
     empty.style.display = visible.length ? 'none' : '';
   }
 
-  const frag = document.createDocumentFragment();
-  for (const t of visible) frag.appendChild(buildCard(t));
-  list.appendChild(frag);
   updateTaskOverview();
 }
 
@@ -944,6 +1131,28 @@ async function applySettings(mutate) {
 /* =========================================================================
  * 顶部 Tab
  * ========================================================================= */
+const tabBar = document.querySelector('.tabs');
+const tabThumb = tabBar ? tabBar.querySelector('.tabs-thumb') : null;
+
+/**
+ * 把滑块对齐到当前激活的 Tab。
+ * @param {boolean} animate 首次布局和窗口缩放传 false，避免滑块从左边"滑进来"
+ */
+function syncTabThumb(animate) {
+  if (!tabBar || !tabThumb) return;
+  const active = tabBar.querySelector('.tab.active');
+  if (!active) return;
+
+  if (!animate) tabThumb.style.transition = 'none';
+  tabThumb.style.width = active.offsetWidth + 'px';
+  tabThumb.style.transform = 'translateX(' + active.offsetLeft + 'px)';
+  if (!animate) {
+    // 读一次布局，让「瞬时定位」和「恢复过渡」落在两帧上，否则会被合并成一次跳变
+    void tabThumb.offsetWidth;
+    tabThumb.style.transition = '';
+  }
+}
+
 document.querySelectorAll('.tab').forEach((btn) => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach((b) => b.classList.remove('active'));
@@ -951,12 +1160,18 @@ document.querySelectorAll('.tab').forEach((btn) => {
     btn.classList.add('active');
     const page = document.getElementById('page-' + btn.dataset.tab);
     if (page) page.classList.add('active');
+    // 滑块先起步，页面切换的副作用（探活 / 读缓存）随后
+    syncTabThumb(true);
     if (btn.dataset.tab === 'settings') {
       void probeServer();
       void refreshCacheInfo();
     }
   });
 });
+
+// 首帧定位无动画；迷你模式切换会改窗口尺寸，缩放时自愈一次
+syncTabThumb(false);
+window.addEventListener('resize', () => syncTabThumb(false));
 
 /* =========================================================================
  * 搜索

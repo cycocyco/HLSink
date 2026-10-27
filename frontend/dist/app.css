@@ -12,6 +12,14 @@
   --white: #e4e6e9;
   --radius: 10px;
   --radius-sm: 7px;
+
+  /* 动效代币：时序与缓动集中在这里，调手感只改这一处 */
+  --ease-out-standard: cubic-bezier(.32, .72, 0, 1); /* 极快启动 + 长拖尾减速 */
+  --ease-thumb: cubic-bezier(.2, .8, .2, 1);         /* 控件滑移，零弹跳 */
+  --ease-enter: cubic-bezier(.2, .8, .2, 1);
+  --dur-instant: 140ms;
+  --dur-micro: 220ms;
+  --dur-standard: 300ms;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -69,8 +77,27 @@ button { color: inherit; }
 .server-pill.ok { color: var(--fg-secondary); }
 .server-pill.ok::before { background: var(--white); }
 .server-pill.bad { color: var(--fg-muted); }
-.tabs { display: flex; align-items: center; gap: 3px; }
+.tabs { position: relative; display: flex; align-items: center; gap: 3px; }
+
+/* 分段滑块：绝对定位跟着激活项走，不参与文字重排。
+   位置由 JS 用 offsetLeft/offsetWidth 实时同步，所以换行或缩放都能自己修正。 */
+.tabs-thumb {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 0;
+  border-radius: 6px;
+  background: var(--raised);
+  pointer-events: none;
+  z-index: 0;
+  transition: transform var(--dur-standard) var(--ease-thumb),
+              width var(--dur-standard) var(--ease-thumb);
+}
+
 .tab {
+  position: relative;
+  z-index: 1;
   background: none;
   border: 0;
   color: var(--fg-muted);
@@ -81,7 +108,7 @@ button { color: inherit; }
   --wails-draggable: no-drag;
 }
 .tab:hover { color: var(--fg-secondary); background: #17181b; }
-.tab.active { color: var(--fg); background: var(--raised); font-weight: 500; }
+.tab.active { color: var(--fg); font-weight: 500; }
 .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 8px; --wails-draggable: no-drag; }
 .toolbar-icon {
   width: 30px; height: 30px;
@@ -165,11 +192,38 @@ button { color: inherit; }
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 12px 14px;
-  transition: border-color 0.14s, background 0.14s;
+  transition: border-color var(--dur-instant), background var(--dur-instant);
 }
 .task-card:hover { border-color: var(--border-strong); }
 .task-card.is-deleting { opacity: 0.6; }
 .task-card.is-failed { border-color: #4a4d52; background: #161719; }
+
+/* =========================================================================
+ * 任务卡片进入 / 退出
+ *
+ * 由 renderTasks 的 keyed diff 驱动，两个 class 的语义严格区分：
+ *   is-entering  只加到「本次真正新增」的卡片上 → 动画必然只播一次
+ *   is-leaving   只加到「任务确实被删除」的卡片上 → 切筛选不会满屏闪
+ * 时序取设计规范的 Micro 档（180~240ms），不抢戏。
+ * ========================================================================= */
+.task-card.is-entering {
+  animation: card-in var(--dur-micro) var(--ease-enter) both;
+}
+
+@keyframes card-in {
+  from { opacity: 0; transform: translateY(-6px); }
+}
+
+.task-card.is-leaving {
+  animation: card-out 180ms var(--ease-out-standard) both;
+  pointer-events: none;
+}
+
+/* 故意不写 from：起始值会取元素当前的 opacity。
+   删除中的卡片基础态是 .6，硬写 1 会先跳亮再淡出，闪一下。 */
+@keyframes card-out {
+  to { opacity: 0; transform: translateY(-4px) scale(.99); }
+}
 
 .task-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .task-status-mark {
@@ -221,7 +275,7 @@ button { color: inherit; }
   font-size: 13px; font-weight: 500;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.task-status { color: var(--fg-secondary); font-size: 11px; white-space: nowrap; flex-shrink: 0; }
+.task-status { color: var(--fg-secondary); font-size: 11px; white-space: nowrap; flex-shrink: 0; font-variant-numeric: tabular-nums; }
 .task-status.s-running,
 .task-status.s-transcoding { color: var(--fg); }
 .task-status.s-done { color: #b9bcc2; }
@@ -252,7 +306,7 @@ button { color: inherit; }
 .task-sub-left, .task-sub-right {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.task-sub-right { flex-shrink: 0; }
+.task-sub-right { flex-shrink: 0; font-variant-numeric: tabular-nums; }
 
 .task-path {
   margin-top: 7px;
@@ -282,10 +336,47 @@ button { color: inherit; }
   overflow: hidden;
 }
 .task-bar-fill {
+  position: relative;
+  overflow: hidden;
   height: 100%;
   background: var(--white);
   border-radius: 5px;
   transition: width 0.35s ease;
+}
+
+/* 传输中的能量流：一道高光沿着已完成段扫过。
+   条本身是白的，所以用「深色流动纹」而不是亮光——白光叠白底看不出来。 */
+.task-bar-fill::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 45%;
+  border-radius: inherit;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(0, 0, 0, .08) 24%,
+    rgba(0, 0, 0, .36) 50%,
+    rgba(0, 0, 0, .08) 76%,
+    transparent 100%
+  );
+  opacity: 0;
+  pointer-events: none;
+}
+.task-card.is-transferring .task-bar-fill::after {
+  opacity: 1;
+  animation: energy-sweep 2.2s cubic-bezier(.5, 0, .3, 1) infinite;
+}
+
+@keyframes pure-fade-in {
+  from { opacity: 0; }
+}
+
+@keyframes energy-sweep {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(300%); }
 }
 .task-bar-fill.paused { background: #8b8f96; }
 .task-bar-fill.done { background: #5e6268; }
@@ -525,6 +616,22 @@ code {
   padding: 20px;
   z-index: 9500;
   --wails-draggable: no-drag;
+  animation: veil-in var(--dur-standard) ease-out both;
+}
+
+@keyframes veil-in {
+  from { opacity: 0; }
+}
+
+/* 退场解耦：卡片先收（180ms），幕布延后 100ms 再淡。
+   直接让幕布一起淡，卡片会在收缩到一半时被幕布吞掉。 */
+.modal-mask.is-closing {
+  animation: veil-out 180ms ease-out 100ms both;
+  pointer-events: none;
+}
+
+@keyframes veil-out {
+  to { opacity: 0; }
 }
 .modal {
   width: 100%; max-width: 390px;
@@ -532,7 +639,19 @@ code {
   border: 1px solid var(--border-strong);
   border-radius: 10px;
   padding: 18px 18px 15px;
-  animation: toast-in 0.14s ease-out;
+  animation: modal-in var(--dur-standard) var(--ease-out-standard) 40ms both;
+}
+
+@keyframes modal-in {
+  from { opacity: 0; transform: translateY(8px) scale(.985); }
+}
+
+.modal-mask.is-closing .modal {
+  animation: modal-out 180ms var(--ease-out-standard) both;
+}
+
+@keyframes modal-out {
+  to { opacity: 0; transform: translateY(6px) scale(.99); }
 }
 .modal-title { font-size: 14px; font-weight: 500; margin-bottom: 9px; }
 .modal-body {
@@ -600,6 +719,22 @@ code {
   .task-status-mark.s-transcoding,
   .mini-state-dot.pulse { animation: none; }
   .task-bar-fill, .mini-track-fill { transition: none; }
+  /* 卡片进出直接瞬切。leaveCard 里有 600ms 兜底，不会因为
+     animationend 不触发而把节点留在 DOM 里。 */
+  .task-card.is-entering,
+  .task-card.is-leaving { animation: none; }
+
+  /* 滑块瞬时到位，不做物理滑移 */
+  .tabs-thumb { transition: none; }
+
+  /* 进度条流光停止，静态进度已经足够表达状态 */
+  .task-card.is-transferring .task-bar-fill::after { animation: none; opacity: 0; }
+
+  /* 弹窗降级为纯淡入（不做位移与缩放） */
+  .modal-mask { animation: none; }
+  .modal { animation: pure-fade-in 160ms ease-out both; }
+  .modal-mask.is-closing,
+  .modal-mask.is-closing .modal { animation: none; }
 }
 
 
