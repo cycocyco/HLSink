@@ -109,37 +109,40 @@
           <div class="row">
             <div class="row-main">
               <div class="row-title">N_m3u8DL-RE</div>
-              <div class="row-sub">留空自动检测（exe 旁 tools / deps / bin 或系统 PATH）</div>
+              <div class="row-sub">填所在文件夹或 exe 都行；留空自动在 exe 旁 tools / deps / bin 和系统 PATH 里找</div>
               <div class="dir-row">
                 <input id="re-path" class="text-input" type="text" spellcheck="false" placeholder="自动检测 N_m3u8DL-RE.exe" />
                 <button id="pick-re" class="mini-btn icon-btn" type="button" title="选择文件夹" aria-label="选择 RE 所在文件夹">
                   <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.6 4.3c0-.6.5-1.1 1.1-1.1h3.1l1.3 1.4h6.2c.6 0 1.1.5 1.1 1.1v6.1c0 .6-.5 1.1-1.1 1.1H2.7c-.6 0-1.1-.5-1.1-1.1V4.3z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/></svg>
                 </button>
               </div>
+              <div class="tool-state" id="state-re"></div>
             </div>
           </div>
           <div class="row">
             <div class="row-main">
               <div class="row-title">yt-dlp</div>
-              <div class="row-sub">用于网页地址解析与 Cloudflare 降级下载</div>
+              <div class="row-sub">用于网页地址解析与 Cloudflare 降级下载；填文件夹或 exe 都行</div>
               <div class="dir-row">
                 <input id="ytdlp-path" class="text-input" type="text" spellcheck="false" placeholder="自动检测 yt-dlp.exe" />
                 <button id="pick-ytdlp" class="mini-btn icon-btn" type="button" title="选择文件夹" aria-label="选择 yt-dlp 所在文件夹">
                   <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.6 4.3c0-.6.5-1.1 1.1-1.1h3.1l1.3 1.4h6.2c.6 0 1.1.5 1.1 1.1v6.1c0 .6-.5 1.1-1.1 1.1H2.7c-.6 0-1.1-.5-1.1-1.1V4.3z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/></svg>
                 </button>
               </div>
+              <div class="tool-state" id="state-ytdlp"></div>
             </div>
           </div>
           <div class="row">
             <div class="row-main">
               <div class="row-title">ffmpeg</div>
-              <div class="row-sub">可用于转码与 mux；填 exe 路径或所在目录</div>
+              <div class="row-sub">用于转码与 mux；填解压根目录即可（会自动进 bin 子目录找）</div>
               <div class="dir-row">
                 <input id="ffmpeg-path" class="text-input" type="text" spellcheck="false" placeholder="自动检测 ffmpeg.exe" />
                 <button id="pick-ffmpeg" class="mini-btn icon-btn" type="button" title="选择文件夹" aria-label="选择 ffmpeg 所在文件夹">
                   <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.6 4.3c0-.6.5-1.1 1.1-1.1h3.1l1.3 1.4h6.2c.6 0 1.1.5 1.1 1.1v6.1c0 .6-.5 1.1-1.1 1.1H2.7c-.6 0-1.1-.5-1.1-1.1V4.3z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/></svg>
                 </button>
               </div>
+              <div class="tool-state" id="state-ffmpeg"></div>
             </div>
           </div>
         </div>

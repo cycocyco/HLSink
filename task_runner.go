@@ -18,15 +18,40 @@ import (
 
 // ---- 外部工具路径解析（不再写死） ----
 
+// toolSubdirs 是目录里找不到可执行文件时的下探顺序。
+//
+// ffmpeg 官方 Windows 包是 <root>\bin\ffmpeg.exe 这种结构，用户填的大多是
+// 解压根目录，所以必须往下探一层，否则会拼出一个不存在的路径。
+var toolSubdirs = []string{"bin", "tools", "deps"}
+
+// findToolInDir 在 dir 本身及其常见子目录里查找 binary，找不到返回空串。
+func findToolInDir(dir, binary string) string {
+	if st, err := os.Stat(filepath.Join(dir, binary)); err == nil && !st.IsDir() {
+		return filepath.Join(dir, binary)
+	}
+	for _, sub := range toolSubdirs {
+		cand := filepath.Join(dir, sub, binary)
+		if st, err := os.Stat(cand); err == nil && !st.IsDir() {
+			return cand
+		}
+	}
+	return ""
+}
+
 // resolveToolPath 把用户设置解析成可执行文件的绝对路径。
 //
 // raw 支持：完整 exe 路径 / 所在目录 / PATH 中的命令名；留空则自动在
-// exe 旁的 tools|deps|bin 目录以及系统 PATH 中查找。找不到返回空字符串。
+// exe 旁及其 tools|deps|bin 子目录、系统 PATH 中查找。找不到返回空字符串。
 func resolveToolPath(raw, binary string) string {
 	raw = strings.TrimSpace(raw)
 	if raw != "" {
 		if st, err := os.Stat(raw); err == nil {
 			if st.IsDir() {
+				if p := findToolInDir(raw, binary); p != "" {
+					return p
+				}
+				// 目录里确实没有：仍是拼一个具体路径返回，
+				// 让调用方的报错能指出"在哪个位置找的哪个文件"，便于排查。
 				return filepath.Join(raw, binary)
 			}
 			return raw
@@ -34,16 +59,11 @@ func resolveToolPath(raw, binary string) string {
 		if p, err := exec.LookPath(raw); err == nil {
 			return p
 		}
-		// 路径尚不存在：仍按目录拼接，交由调用方在启动时报明确的错误。
 		return filepath.Join(raw, binary)
 	}
 	if exe, err := os.Executable(); err == nil {
-		base := filepath.Dir(exe)
-		for _, sub := range []string{"tools", "deps", "bin"} {
-			cand := filepath.Join(base, sub, binary)
-			if _, err := os.Stat(cand); err == nil {
-				return cand
-			}
+		if p := findToolInDir(filepath.Dir(exe), binary); p != "" {
+			return p
 		}
 	}
 	if p, err := exec.LookPath(binary); err == nil {
@@ -68,12 +88,53 @@ func (a *App) toolFFmpeg() string {
 }
 
 // toolFFmpegDir 返回 ffmpeg 所在目录（供 yt-dlp --ffmpeg-location 使用）。
+// 文件不存在时返回空：宁可让 yt-dlp 自己去 PATH 找，也不要喂它一个假目录。
 func (a *App) toolFFmpegDir() string {
 	ff := a.toolFFmpeg()
 	if ff == "" {
 		return ""
 	}
+	if st, err := os.Stat(ff); err != nil || st.IsDir() {
+		return ""
+	}
 	return filepath.Dir(ff)
+}
+
+// ToolStatus 是单个外部工具的解析结果，供设置页回显「到底认没认出来」。
+type ToolStatus struct {
+	Key   string `json:"key"`
+	Name  string `json:"name"`
+	Path  string `json:"path"`
+	Found bool   `json:"found"`
+	Note  string `json:"note"`
+}
+
+// CheckTools 把三个外部工具的解析结果回显给设置页。
+//
+// 用户填目录、填 exe、留空自动找，最终都经过 resolveToolPath，
+// 这里直接把命中结果报出来——填完不用猜，也不用等到下载失败才发现。
+func (a *App) CheckTools() []ToolStatus {
+	s := a.currentSettings()
+	one := func(key, name, raw, binary string) ToolStatus {
+		p := resolveToolPath(raw, binary)
+		out := ToolStatus{Key: key, Name: name, Path: p}
+		if p == "" {
+			out.Note = "未找到，请指定目录或 exe"
+			return out
+		}
+		if st, err := os.Stat(p); err != nil || st.IsDir() {
+			out.Note = "该位置没有 " + binary
+			return out
+		}
+		out.Found = true
+		out.Note = "已就绪"
+		return out
+	}
+	return []ToolStatus{
+		one("re", "N_m3u8DL-RE", s.REPath, "N_m3u8DL-RE.exe"),
+		one("ytdlp", "yt-dlp", s.YtdlpPath, "yt-dlp.exe"),
+		one("ffmpeg", "ffmpeg", s.FFmpegPath, "ffmpeg.exe"),
+	}
 }
 
 // 真正有界的并发：最多 2 个下载 + 1 个转码同时跑，其余任务保持 queued。
@@ -505,6 +566,9 @@ func (a *App) runRE(rs *runState, t *Task, downloadDir, tmpDir string) error {
 	if reExe == "" {
 		return fmt.Errorf("未找到 N_m3u8DL-RE，请在设置里指定它的路径")
 	}
+	if st, err := os.Stat(reExe); err != nil || st.IsDir() {
+		return fmt.Errorf("N_m3u8DL-RE 不在指定位置: %s", reExe)
+	}
 	threads := strconv.Itoa(normalizeThreadCount(t.threadCount))
 	kind := normalizeStreamKind(t.Kind)
 	if !isKnownStreamKind(kind) {
@@ -526,8 +590,12 @@ func (a *App) runRE(rs *runState, t *Task, downloadDir, tmpDir string) error {
 		"--auto-select", // 无交互环境必须自动选轨
 		"--no-log",
 	}
+	// 只有 ffmpeg 确实存在才传：传一个不存在的路径，RE 会在混流阶段
+	// 直接退出（exit status 1），报错信息还完全看不出是 ffmpeg 的问题。
 	if ff := a.toolFFmpeg(); ff != "" {
-		args = append(args, "--ffmpeg-binary-path", ff)
+		if st, err := os.Stat(ff); err == nil && !st.IsDir() {
+			args = append(args, "--ffmpeg-binary-path", ff)
+		}
 	}
 	args = append(args, muxArgs...)
 	headerArgs := headerLines(t.Headers)
@@ -556,6 +624,9 @@ func (a *App) runYtdlp(rs *runState, t *Task, downloadDir string) error {
 	yt := a.toolYtdlp()
 	if yt == "" {
 		return fmt.Errorf("未找到 yt-dlp，请在设置里指定它的路径")
+	}
+	if st, err := os.Stat(yt); err != nil || st.IsDir() {
+		return fmt.Errorf("yt-dlp 不在指定位置: %s", yt)
 	}
 	threads := strconv.Itoa(normalizeThreadCount(t.threadCount))
 	args := []string{
@@ -591,6 +662,9 @@ func (a *App) doTranscode(rs *runState, t *Task, src string) (string, error) {
 	ff := a.toolFFmpeg()
 	if ff == "" {
 		return "", fmt.Errorf("未找到 ffmpeg，请在设置里指定它的路径")
+	}
+	if st, err := os.Stat(ff); err != nil || st.IsDir() {
+		return "", fmt.Errorf("ffmpeg 不在指定位置: %s", ff)
 	}
 	outDir := filepath.Join(t.WorkDir, "transcode")
 	if err := os.MkdirAll(outDir, 0o755); err != nil {

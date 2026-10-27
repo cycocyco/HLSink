@@ -738,6 +738,17 @@ code {
 }
 
 
+/* 外部工具检测结果：一眼看出填的路径到底认没认出来 */
+.tool-state {
+  margin-top: 7px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+  word-break: break-all;
+}
+.tool-state:empty { display: none; }
+.tool-state.bad { color: #c27c7c; }
+
 /* 工具路径行的文件夹选择按钮：方形、图标居中 */
 .dir-row .icon-btn {
   width: 34px;

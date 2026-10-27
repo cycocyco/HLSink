@@ -60,10 +60,11 @@
     AlwaysOnTop: () => call('AlwaysOnTop'),
     ClearCache: () => call('ClearCache'),
     CacheInfo: () => call('CacheInfo'),
+    CheckTools: () => call('CheckTools'),
     ServerStatus: () => call('ServerStatus'),
   };
 
-  const { ListTasks, GetSettings, SaveSettings, PauseTask, ResumeTask, DeleteTask, PickFolder, PickToolFolder, ToggleMini, ToggleAlwaysOnTop, AlwaysOnTop, AddTask, ClearCache, CacheInfo } = AppApi;
+  const { ListTasks, GetSettings, SaveSettings, PauseTask, ResumeTask, DeleteTask, PickFolder, PickToolFolder, ToggleMini, ToggleAlwaysOnTop, AlwaysOnTop, AddTask, ClearCache, CacheInfo, CheckTools } = AppApi;
 
   const EventsOn = (name, cb) =>
     RT.Events.On(name, (ev) => cb(ev && typeof ev === 'object' && 'data' in ev ? ev.data : ev));
@@ -1059,6 +1060,32 @@ function renderSettings() {
  * 保存中禁用设置控件，防重复提交。
  * 只锁开关，不锁目录输入框：input 被 disabled 会触发 blur，可能引发二次保存。
  */
+/**
+ * 刷新三个外部工具的检测结果。
+ *
+ * 后端把用户填的目录/exe 一路解析到具体文件，这里只负责显示：
+ * 命中就回显真实路径，没命中就说清楚在哪个位置没找到。
+ */
+async function refreshToolStates() {
+  if (typeof CheckTools !== 'function') return;
+  let list = [];
+  try {
+    list = await CheckTools();
+  } catch (err) {
+    console.error('[tools] 检测失败', err);
+    return;
+  }
+  if (!Array.isArray(list)) return;
+  for (const t of list) {
+    const box = document.getElementById('state-' + t.key);
+    if (!box) continue;
+    const ok = !!t.found;
+    box.classList.toggle('bad', !ok);
+    box.textContent = (ok ? '✓ ' : '✗ ') + (ok ? t.path : (t.note || '未找到'));
+    box.title = ok ? t.path : (t.path ? '查找位置：' + t.path : '');
+  }
+}
+
 function setSettingsBusy(busy) {
   const hevc = /** @type {?HTMLInputElement} */ (document.getElementById('hevc-toggle'));
   const threads = /** @type {?HTMLInputElement} */ (document.getElementById('thread-count'));
@@ -1115,6 +1142,8 @@ async function applySettings(mutate) {
       ffmpegPath: next.ffmpegPath,
     });
     state.settings = saved && typeof saved === 'object' ? saved : next;
+    // 保存即重新检测：路径填得对不对，这里立刻能看到
+    void refreshToolStates();
     return true;
   } catch (err) {
     console.error('[settings] 保存失败', err);
@@ -1165,6 +1194,7 @@ document.querySelectorAll('.tab').forEach((btn) => {
     if (btn.dataset.tab === 'settings') {
       void probeServer();
       void refreshCacheInfo();
+      void refreshToolStates();
     }
   });
 });
@@ -1853,6 +1883,7 @@ async function init() {
   renderSettings();
   refresh();
   void refreshCacheInfo();
+  void refreshToolStates();
 
   // 页面初始可能错过 server-ready 事件，主动探测一次，之后定时刷新
   void probeServer();
