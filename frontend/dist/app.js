@@ -61,6 +61,7 @@
     ClearCache: () => call('ClearCache'),
     CacheInfo: () => call('CacheInfo'),
     CheckTools: () => call('CheckTools'),
+    LoginTelegram: () => call('LoginTelegram'),
     ServerStatus: () => call('ServerStatus'),
   };
 
@@ -1368,6 +1369,23 @@ for (const [id, key] of [
   });
   el.addEventListener('keydown', (e) => {
     if (/** @type {KeyboardEvent} */ (e).key === 'Enter') /** @type {HTMLElement} */ (e.target).blur();
+  });
+}
+
+/* Telegram 登录：tdl 必须在真终端里扫码，后端会弹一个控制台窗口 */
+const loginTdlBtn = /** @type {?HTMLButtonElement} */ (document.getElementById('login-tdl'));
+if (loginTdlBtn) {
+  loginTdlBtn.addEventListener('click', async () => {
+    if (loginTdlBtn.disabled) return;
+    loginTdlBtn.disabled = true;
+    try {
+      await AppApi.LoginTelegram();
+      showToast('已打开登录窗口，扫码后即可下载', 'ok');
+    } catch (err) {
+      showToast('打开登录窗口失败：' + errMsg(err), 'error');
+    } finally {
+      loginTdlBtn.disabled = false;
+    }
   });
 }
 

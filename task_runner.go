@@ -455,11 +455,11 @@ func (a *App) doDownload(rs *runState, taskID string) (string, error) {
 
 		// 降级链深度保护：兜住「A→B→A」这种配置错误，绝不允许无限重试。
 		if attempt >= maxEngineAttempts {
-			return "", withLogTail(a.explainEngineError(current, runErr), rs.logPath)
+			return "", a.explainEngineError(current, runErr, rs.logPath)
 		}
 		next, ok := a.fallbackFor(kind, current, runErr, rs.logPath)
 		if !ok {
-			return "", withLogTail(a.explainEngineError(current, runErr), rs.logPath)
+			return "", a.explainEngineError(current, runErr, rs.logPath)
 		}
 
 		msg := a.fallbackMessage(current, next, runErr, rs.logPath)
@@ -554,12 +554,20 @@ func (a *App) fallbackMessage(from, to engine.Downloader, err error, logPath str
 	}
 }
 
-// explainEngineError 把引擎内部错误翻译成用户能理解的一句话。
-func (a *App) explainEngineError(d engine.Downloader, err error) error {
+// explainEngineError 把引擎内部错误翻译成用户能理解的一句话，并附上日志尾巴。
+//
+// 顺序是先问引擎自己（FailureExplainer）：像「tdl 未登录」这种，日志里只有一段
+// gotd 调用栈，对用户零信息量，引擎能说清就直接用它的说法，不再拼日志。
+func (a *App) explainEngineError(d engine.Downloader, err error, logPath string) error {
 	if errors.Is(err, engine.ErrStalled) {
 		return fmt.Errorf("%s 超过 %d 秒没有下载进展", d.Label(), int(d.Stall().Seconds()))
 	}
-	return err
+	if fe, ok := d.(engine.FailureExplainer); ok {
+		if msg, ok := fe.ExplainFailure(logPath); ok {
+			return errors.New(msg)
+		}
+	}
+	return withLogTail(err, logPath)
 }
 
 // doTranscode 用注册的后处理工具转码，返回成品路径。

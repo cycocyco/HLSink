@@ -2,7 +2,9 @@ package engine
 
 import (
 	"fmt"
+	"io"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -139,6 +141,66 @@ func stripANSI(s string) string {
 		return s
 	}
 	return reANSI.ReplaceAllString(s, "")
+}
+
+// ExplainFailure 把「未登录」这坨调用栈翻译成一句能照着做的话。
+//
+// 触发场景有两个，都要认：
+//   - 从没登录过（新装）；
+//   - 登录过但已被服务端作废。后一种很常见：用 -T desktop 导入桌面端 tdata 时，
+//     tdl 拿到的是桌面端那把 auth key 的副本，桌面端一启动就可能让这把 key 失效
+//     （Telegram 侧会把它当成同一设备），于是昨天还能下，今天就说未授权。
+func (tdlEngine) ExplainFailure(logPath string) (string, bool) {
+	if !logHasAny(logPath, "not authorized", "AUTH_KEY_UNREGISTERED", "unauthorized") {
+		return "", false
+	}
+	return "Telegram 未登录或登录已失效：到设置页 tdl 那一行点「登录」扫二维码", true
+}
+
+// LoginArgs 登录命令的参数。
+//
+// 刻意用 -T qr 而不是默认的 desktop 导入：导入 tdata 拿到的是桌面端 auth key 的
+// 副本，桌面端一启动就可能把它顶掉，隔天就变成「未授权」。扫码是独立设备，
+// 在 Telegram 的「设备」列表里单列一行，不会被动失效。
+func (tdlEngine) LoginArgs(proxy string) []string {
+	args := []string{"login", "-T", "qr"}
+	if p := socksProxy(proxy); p != "" {
+		args = append(args, "--proxy", p)
+	}
+	return args
+}
+
+// LoginTitle 登录窗口标题。
+func (tdlEngine) LoginTitle() string { return "HLSink - Telegram 登录" }
+
+// logHasAny 判断本次运行的日志里是否出现任一关键词（只读尾部 64KB，够用且便宜）。
+func logHasAny(logPath string, needles ...string) bool {
+	if logPath == "" {
+		return false
+	}
+	f, err := os.Open(logPath)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+
+	const tail = 64 << 10
+	if st, serr := f.Stat(); serr == nil && st.Size() > tail {
+		if _, serr := f.Seek(-tail, io.SeekEnd); serr != nil {
+			return false
+		}
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return false
+	}
+	text := strings.ToLower(string(data))
+	for _, n := range needles {
+		if n != "" && strings.Contains(text, strings.ToLower(n)) {
+			return true
+		}
+	}
+	return false
 }
 
 // tdlThreads 把通用线程数收敛到 Telegram 能接受的范围。

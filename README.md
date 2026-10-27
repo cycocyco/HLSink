@@ -39,16 +39,17 @@
 
 ## Telegram 怎么用
 
-`tdl` 要登录一次才能下东西，而它的登录是交互式的（要按方向键选账号），所以得在命令行做一次：
+`tdl` 要登录一次才能下东西。设置页 tdl 那一行有个「登录」按钮，点了会弹一个控制台窗口，用手机 Telegram 扫里面的二维码就行（设置 → 设备 → 连接设备）。
+
+想自己在命令行做也行：
 
 ```
-& "路径\tdl.exe" login -d "你的 Telegram Desktop 目录" --proxy socks5://127.0.0.1:7897
+& "路径\tdl.exe" login -T qr --proxy socks5://127.0.0.1:7897
 ```
 
-- `-d` 指到 Telegram Desktop 的安装目录（或者直接用 `tdl login -T qr` 扫码）
-- AyuGram / Nekogram 这类第三方分支也能用，它们的 `tdata` 跟官方同一套格式
-- 走 `--proxy`：Telegram 的 DC 直连不通，必须挂代理
-- 看到 `Choose a user id` 时按回车选默认那个，成功后会话存进 `~/.tdl`
+- **别用 `-d` 去导入桌面端的 `tdata`**。那样拿到的是桌面端那把登录密钥的副本，跟你正在用的客户端共用同一个会话，两边会互相顶掉：客户端一重新登录，tdl 这边立刻变成「未授权」，反之也一样。扫码是独立设备，在 Telegram 的「设备」列表里单列一行，互不影响。
+- 必须挂代理：Telegram 的 DC 直连不通，`--proxy` 只认 `socks5://`
+- 登录态存在 `%USERPROFILE%\.tdl`，登录一次就够
 
 登录成功后，在「添加链接」里粘 Telegram 消息的分享链接（`https://t.me/频道/消息ID`）就行，`?single` 这类参数不用手动去掉。
 

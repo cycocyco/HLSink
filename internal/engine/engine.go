@@ -130,3 +130,25 @@ type Transcoder interface {
 	Binary() string
 	Build(src, dst string) (Command, error)
 }
+
+// FailureExplainer 是可选的：让引擎自己解释「这次失败对用户意味着什么」。
+//
+// 有些失败光看错误码毫无意义——tdl 没登录时会甩出一整段 gotd 调用栈，
+// 用户读到的是 github.com/gotd/td/telegram.(*Client).Run.func3，完全没有信息量。
+// 而引擎自己一眼就知道「该去登录」。让引擎说，编排层就不用按工具名写 if。
+type FailureExplainer interface {
+	// ExplainFailure 读本次运行的日志，返回一句能指导操作的话。
+	// ok=false 表示这条失败不归它管，交给默认处理。
+	ExplainFailure(logPath string) (msg string, ok bool)
+}
+
+// TerminalLogin 是可选的：该引擎的登录必须在真终端里交互完成
+// （要渲染二维码、要按方向键选账号），没法从后台用管道驱动。
+//
+// 实现了它，设置页就能给一个「登录」按钮；没实现说明这工具不需要登录。
+type TerminalLogin interface {
+	// LoginArgs 返回登录命令的参数（不含 exe 本身）。
+	LoginArgs(proxy string) []string
+	// LoginTitle 是登录窗口的标题，同时用于生成的临时脚本。
+	LoginTitle() string
+}
