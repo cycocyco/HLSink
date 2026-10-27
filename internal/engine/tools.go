@@ -51,6 +51,13 @@ func Resolve(raw, binary string) string {
 		if p, err := exec.LookPath(raw); err == nil {
 			return p
 		}
+		// raw 本身就是个可执行文件路径但不存在（用户填错了）：原样返回，
+		// 让报错显示「不在指定位置: <他填的那个路径>」。
+		// 若继续走下面的 Join，会拼出 "...\x.exe\x.exe" 这种自我重复的路径，
+		// 用户看到只会更迷惑，不知道自己到底填错在哪。
+		if strings.EqualFold(filepath.Ext(raw), ".exe") {
+			return raw
+		}
 		return filepath.Join(raw, binary)
 	}
 	if exe, err := os.Executable(); err == nil {

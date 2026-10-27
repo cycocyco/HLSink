@@ -38,16 +38,12 @@ func sortedHeaderKeys(headers map[string]string) []string {
 }
 
 // headerLines 生成 "Key: Value" 行，供 -H / --add-header 使用。
-// skip 返回 true 的键会被跳过（由各引擎声明自己的例外，如 yt-dlp 的 UA/Referer）。
-func headerLines(headers map[string]string, skip func(string) bool) []string {
+func headerLines(headers map[string]string) []string {
 	if len(headers) == 0 {
 		return nil
 	}
 	out := make([]string, 0, len(headers))
 	for _, k := range sortedHeaderKeys(headers) {
-		if skip != nil && skip(k) {
-			continue
-		}
 		v := CleanHeaderValue(headers[k])
 		if v == "" {
 			continue

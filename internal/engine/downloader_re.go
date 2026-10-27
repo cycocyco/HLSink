@@ -70,7 +70,7 @@ func (reEngine) Build(j Job, t Tools) (Command, error) {
 	}
 	args = append(args, mux...)
 
-	for _, h := range headerLines(j.Headers, nil) {
+	for _, h := range headerLines(j.Headers) {
 		args = append(args, "-H", h)
 	}
 	// Referer 是独立字段；若 Headers 里已经有就不再补，避免两条冲突的头。

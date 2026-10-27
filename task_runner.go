@@ -16,7 +16,8 @@ import (
 // 本文件只做「编排」：任务怎么排队、用哪个引擎、失败了要不要降级、成品怎么发布。
 //
 // 具体某个外部工具的参数怎么拼、输出怎么读，全部在 internal/engine 里。
-// 这里不允许出现任何一个具体工具的名字或参数——加新工具时本文件不用改。
+// 除了 toolMap() 那几行「配置字段 → 引擎 key」的映射，本文件不出现任何具体工具。
+// 加新工具时：新实现的文件在自己的 init() 里登记，toolMap 补一行，其余不用动。
 
 // 真正有界的并发：最多 2 个下载 + 1 个转码同时跑，其余任务保持 queued。
 const (
@@ -33,6 +34,10 @@ const (
 	// stagedName 所有引擎在 staging 内统一使用的文件名前缀。
 	// findStaged 靠它认产物，所以这里是全局约定，不属于某个引擎。
 	stagedName = "download"
+	// maxEngineAttempts 一条降级链最多尝试几个引擎。
+	// 正常链条是 RE→yt-dlp 两级；设上限是为了兜住「A→B→A」这类配置错误，
+	// 否则会无限重试同一个坏链接，既烧流量又让任务卡在 0%。
+	maxEngineAttempts = 3
 )
 
 // runState 表示一次运行（下载 + 可选转码）的全部可取消资源。
@@ -404,7 +409,8 @@ func (a *App) doDownload(rs *runState, taskID string) (string, error) {
 		Proxy:   systemProxy(),
 		Name:    stagedName,
 	}
-	tools := a.tools()
+	// 依赖在循环内按次解析（见下），这里只声明。
+	var tools engine.Tools
 
 	current := engine.Pick(kind)
 	if current == nil {
@@ -412,7 +418,12 @@ func (a *App) doDownload(rs *runState, taskID string) (string, error) {
 	}
 
 	first := true
-	for {
+	for attempt := 1; ; attempt++ {
+		// 每次尝试前重新解析依赖：原实现里每个引擎启动前都会重读设置与系统代理，
+		// 用户在降级间隙改了代理或工具路径，下一次尝试应当用新值。
+		job.Proxy = systemProxy()
+		tools = a.tools()
+
 		hint := ""
 		if first {
 			hint = current.Hint()
@@ -426,10 +437,9 @@ func (a *App) doDownload(rs *runState, taskID string) (string, error) {
 		})
 
 		runErr := a.runEngine(rs, current, job, tools)
-		if rs.ctx.Err() != nil {
-			return "", engine.ErrCancelled
-		}
 
+		// 先看有没有产物，再看是否被取消：引擎跑完的瞬间用户点了暂停时，
+		// 产物是完整的，交给上层按自己的节奏处理即可。
 		if runErr == nil {
 			if p, ferr := findStaged(downloadDir); ferr == nil {
 				return p, nil
@@ -438,7 +448,14 @@ func (a *App) doDownload(rs *runState, taskID string) (string, error) {
 				runErr = ferr
 			}
 		}
+		if rs.ctx.Err() != nil {
+			return "", engine.ErrCancelled
+		}
 
+		// 降级链深度保护：兜住「A→B→A」这种配置错误，绝不允许无限重试。
+		if attempt >= maxEngineAttempts {
+			return "", withLogTail(a.explainEngineError(current, runErr), rs.logPath)
+		}
 		next, ok := a.fallbackFor(kind, current, runErr, rs.logPath)
 		if !ok {
 			return "", withLogTail(a.explainEngineError(current, runErr), rs.logPath)

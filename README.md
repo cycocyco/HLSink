@@ -110,10 +110,19 @@ HLSink/
 ├── main.go                 # 入口：应用、无边框窗口、单实例
 ├── task.go                 # App / 设置 / 任务生命周期 / 清缓存
 ├── task_store.go           # 状态机与事件广播
-├── task_runner.go          # 调度 RE / yt-dlp / ffmpeg，解析进度
+├── task_runner.go          # 编排：排队、选引擎、失败降级、发布成品
 ├── task_server.go          # 给扩展用的本地 HTTP 接口
 ├── task_paths.go           # 路径安全、发布、删除
-├── task_stream.go          # 判断是 hls / dash / 网页
+├── internal/engine/        # 外部工具模块，每个工具一个文件
+│   ├── engine.go           # 接口：Downloader / Transcoder
+│   ├── registry.go         # 注册表（按优先级排降级链）
+│   ├── kind.go             # 判断是 hls / dash / 网页
+│   ├── tools.go            # 找 exe：填目录、填 exe、留空自动找
+│   ├── run.go              # 跑进程、停滞看门狗、杀进程树
+│   ├── headers.go          # 请求头清洗
+│   ├── downloader_re.go    # N_m3u8DL-RE
+│   ├── downloader_ytdlp.go # yt-dlp
+│   └── transcoder_ffmpeg.go# ffmpeg
 ├── protocol_windows.go     # 注册 hlsink:// 协议
 ├── frontend/dist/          # 前端源码（就是发布文件，没有编译步骤）
 │   ├── index.html
@@ -124,6 +133,15 @@ HLSink/
 ├── extension/              # Chromium 扩展
 └── build/                  # 图标与清单
 ```
+
+外部工具的调用全部关在 `internal/engine` 里，编排层（`task_runner.go`）不出现任何具体工具的参数。想接第四个工具（比如 tdl、aria2）：
+
+1. 新建一个 `internal/engine/downloader_xxx.go`，实现 `Downloader` 那几个方法，`init()` 里 `Register(...)`
+2. `Settings` 加一个路径字段，`App.toolMap()` 补一行映射
+3. 前端设置页加一个输入框
+
+参数怎么拼、进度怎么读、多久算卡死，全在新文件里，编排层不用动。
+
 
 ## 图标
 

@@ -124,15 +124,3 @@ type Transcoder interface {
 	Binary() string
 	Build(src, dst string) (Command, error)
 }
-
-// LabelOf 返回引擎的展示名，找不到时回退为 key 本身。
-// 前端与错误信息都用它，避免各处各写一份 switch。
-func LabelOf(key string) string {
-	if d, ok := Get(key); ok {
-		return d.Label()
-	}
-	if t := GetTranscoder(); t != nil && t.Key() == key {
-		return t.Label()
-	}
-	return key
-}

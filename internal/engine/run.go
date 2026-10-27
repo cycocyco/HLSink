@@ -124,7 +124,7 @@ func Run(ctx context.Context, o RunOpts) error {
 			ticker := time.NewTicker(stallProbeInterval)
 			defer ticker.Stop()
 
-			last := DirBytes(o.Probes...)
+			last := dirBytes(o.Probes...)
 			lastMove := time.Now()
 			for {
 				select {
@@ -132,7 +132,7 @@ func Run(ctx context.Context, o RunOpts) error {
 					return
 				case <-ticker.C:
 				}
-				cur := DirBytes(o.Probes...)
+				cur := dirBytes(o.Probes...)
 				if cur != last {
 					// 字节数变化（含分片被清理导致的减少）都算在动。
 					last, lastMove = cur, time.Now()
@@ -196,13 +196,13 @@ func killTree(p *os.Process) {
 	_ = p.Kill()
 }
 
-// DirBytes 统计若干目录下所有文件的字节总和（目录不存在按 0 计）。
+// dirBytes 统计若干目录下所有文件的字节总和（目录不存在按 0 计）。
 //
 // 注意：这里必须对每个文件调用 os.Stat，不能直接用 WalkDir 拿到的
 // DirEntry.Info()。后者走的是目录枚举（FindFirstFile），Windows 上正在被
 // 写入的文件，其目录项大小可能长时间停留在旧值甚至 0，会把「正在下载」
 // 误判成「停滞」。os.Stat 走文件句柄查询，拿到的是实时大小。
-func DirBytes(dirs ...string) int64 {
+func dirBytes(dirs ...string) int64 {
 	var total int64
 	for _, dir := range dirs {
 		_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
