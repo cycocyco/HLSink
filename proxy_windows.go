@@ -81,3 +81,39 @@ func normalizeProxy(raw string) string {
 	}
 	return raw
 }
+
+// normalizeProxyInput 规范化用户在设置里填的代理地址。
+//
+// 允许三种写法：
+//
+//	127.0.0.1:7890          → http://127.0.0.1:7890
+//	http://127.0.0.1:7897   → 原样
+//	（空）                  → 空，表示跟随系统代理
+//
+// 填了但解析不出主机名时原样返回，让引擎自己报错——总比在这里悄悄吞掉、
+// 然后用户以为"设置了却没生效"要好。
+func normalizeProxyInput(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "http://" + raw
+	}
+	return raw
+}
+
+// proxyURL 返回本次下载该用的代理：设置里填了就用它，否则跟随系统。
+//
+// 为什么不让所有引擎都直接用系统代理：tdl 压根不读注册表；而机器上常同时
+// 跑两三个代理端口（7890/7897/10808），系统里只能启用一个，下载要用的可能
+// 不是"当前启用的那个"。所以给用户一个显式入口。
+func (a *App) proxyURL() string {
+	a.mu.Lock()
+	custom := a.settings.ProxyURL
+	a.mu.Unlock()
+	if custom = normalizeProxyInput(custom); custom != "" {
+		return custom
+	}
+	return systemProxy()
+}

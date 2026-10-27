@@ -36,7 +36,8 @@ func (a *App) LoginTelegram() error {
 		return err
 	}
 
-	bat, err := a.writeLoginScript(exe, lg.LoginArgs(systemProxy()), lg.LoginTitle())
+	// 登录也要走同一个代理：tdl 连 DC 的方式和下载完全一样。
+	bat, err := a.writeLoginScript(exe, lg.LoginArgs(a.proxyURL()), lg.LoginTitle())
 	if err != nil {
 		return err
 	}

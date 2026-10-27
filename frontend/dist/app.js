@@ -105,7 +105,7 @@ const state = {
 };
 
 /** 默认设置：后端拿不到时兜底，避免空引用 */
-const DEFAULT_SETTINGS = { downloadDir: '', hevctTranscode: true, threadCount: 32, rePath: '', ytdlpPath: '', ffmpegPath: '', tdlPath: '' };
+const DEFAULT_SETTINGS = { downloadDir: '', hevctTranscode: true, threadCount: 32, rePath: '', ytdlpPath: '', ffmpegPath: '', tdlPath: '', proxyUrl: '' };
 
 /** 任务状态 -> 中文文案 */
 const statusText = {
@@ -1052,6 +1052,7 @@ function renderSettings() {
   const ytEl = /** @type {?HTMLInputElement} */ (document.getElementById('ytdlp-path'));
   const ffEl = /** @type {?HTMLInputElement} */ (document.getElementById('ffmpeg-path'));
   const tdlEl = /** @type {?HTMLInputElement} */ (document.getElementById('tdl-path'));
+  const proxyEl = /** @type {?HTMLInputElement} */ (document.getElementById('proxy-url'));
   // 正在编辑时不覆盖输入框，避免打断用户输入
   if (dirEl && document.activeElement !== dirEl) dirEl.value = String(s.downloadDir || '');
   if (hevcEl) hevcEl.checked = !!s.hevctTranscode;
@@ -1062,6 +1063,7 @@ function renderSettings() {
   if (ytEl && document.activeElement !== ytEl) ytEl.value = String(s.ytdlpPath || '');
   if (ffEl && document.activeElement !== ffEl) ffEl.value = String(s.ffmpegPath || '');
   if (tdlEl && document.activeElement !== tdlEl) tdlEl.value = String(s.tdlPath || '');
+  if (proxyEl && document.activeElement !== proxyEl) proxyEl.value = String(s.proxyUrl || '');
 }
 
 /**
@@ -1135,6 +1137,7 @@ async function applySettings(mutate) {
     ytdlpPath: String((state.settings || DEFAULT_SETTINGS).ytdlpPath || ''),
     ffmpegPath: String((state.settings || DEFAULT_SETTINGS).ffmpegPath || ''),
     tdlPath: String((state.settings || DEFAULT_SETTINGS).tdlPath || ''),
+    proxyUrl: String((state.settings || DEFAULT_SETTINGS).proxyUrl || ''),
   };
   const next = {
     downloadDir: prev.downloadDir,
@@ -1144,6 +1147,7 @@ async function applySettings(mutate) {
     ytdlpPath: prev.ytdlpPath,
     ffmpegPath: prev.ffmpegPath,
     tdlPath: prev.tdlPath,
+    proxyUrl: prev.proxyUrl,
   };
   mutate(next);
 
@@ -1158,6 +1162,7 @@ async function applySettings(mutate) {
       ytdlpPath: next.ytdlpPath,
       ffmpegPath: next.ffmpegPath,
       tdlPath: next.tdlPath,
+      proxyUrl: next.proxyUrl,
     });
     state.settings = saved && typeof saved === 'object' ? saved : next;
     // 保存即重新检测：路径填得对不对，这里立刻能看到
@@ -1358,6 +1363,7 @@ for (const [id, key] of [
   ['ytdlp-path', 'ytdlpPath'],
   ['ffmpeg-path', 'ffmpegPath'],
   ['tdl-path', 'tdlPath'],
+  ['proxy-url', 'proxyUrl'],
 ]) {
   const el = /** @type {?HTMLInputElement} */ (document.getElementById(id));
   if (!el) continue;

@@ -407,7 +407,7 @@ func (a *App) doDownload(rs *runState, taskID string) (string, error) {
 		Threads: normalizeThreadCount(snap.threadCount),
 		Headers: snap.Headers,
 		Referer: snap.Referer,
-		Proxy:   systemProxy(),
+		Proxy:   a.proxyURL(),
 		Name:    stagedName,
 	}
 	// 依赖在循环内按次解析（见下），这里只声明。
@@ -563,7 +563,7 @@ func (a *App) explainEngineError(d engine.Downloader, err error, logPath string)
 		return fmt.Errorf("%s 超过 %d 秒没有下载进展", d.Label(), int(d.Stall().Seconds()))
 	}
 	if fe, ok := d.(engine.FailureExplainer); ok {
-		if msg, ok := fe.ExplainFailure(logPath); ok {
+		if msg, ok := fe.ExplainFailure(err, logPath); ok {
 			return errors.New(msg)
 		}
 	}

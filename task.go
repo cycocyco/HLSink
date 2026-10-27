@@ -102,6 +102,12 @@ type Settings struct {
 	YtdlpPath     string `json:"ytdlpPath"`
 	FFmpegPath    string `json:"ffmpegPath"`
 	TdlPath       string `json:"tdlPath"`
+	// ProxyURL 手动指定的代理，形如 http://127.0.0.1:7890；留空表示跟随系统代理。
+	//
+	// 为什么需要单独一项：tdl 不读 Windows 的"系统代理"设置，只能显式喂；
+	// 而机器上常同时跑两个代理（比如 7890 与 7897），系统里只能启用一个，
+	// 用户得能在这里指定到底走哪个。
+	ProxyURL string `json:"proxyUrl"`
 }
 
 // App Wails 绑定的应用对象。
@@ -290,6 +296,7 @@ func (a *App) loadConfig() {
 	a.settings.YtdlpPath = strings.TrimSpace(s.YtdlpPath)
 	a.settings.FFmpegPath = strings.TrimSpace(s.FFmpegPath)
 	a.settings.TdlPath = strings.TrimSpace(s.TdlPath)
+	a.settings.ProxyURL = normalizeProxyInput(s.ProxyURL)
 	a.mu.Unlock()
 }
 
@@ -395,6 +402,7 @@ func (a *App) SaveSettings(s Settings) (Settings, error) {
 	a.settings.YtdlpPath = strings.TrimSpace(s.YtdlpPath)
 	a.settings.FFmpegPath = strings.TrimSpace(s.FFmpegPath)
 	a.settings.TdlPath = strings.TrimSpace(s.TdlPath)
+	a.settings.ProxyURL = normalizeProxyInput(s.ProxyURL)
 	saved := a.settings
 	a.mu.Unlock()
 

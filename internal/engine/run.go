@@ -107,6 +107,10 @@ func Run(ctx context.Context, o RunOpts) error {
 	defer func() { _ = logFile.Close() }()
 
 	cmd := exec.Command(o.Exe, o.Args...)
+	if len(o.Env) > 0 {
+		// 追加而不是覆盖：PATH、USERPROFILE 这些必须保留（tdl 靠 USERPROFILE 找 ~/.tdl）。
+		cmd.Env = append(os.Environ(), o.Env...)
+	}
 	hideWindow(cmd)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile

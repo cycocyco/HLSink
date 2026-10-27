@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -88,16 +89,27 @@ func (tdlEngine) Build(j Job, t Tools) (Command, error) {
 		"--template", "download.{{ filenamify .FileName }}",
 		// 关掉 CPU/Memory 那行装饰：既省日志体积，也少一类误匹配。
 		"--disable-progress-ps",
+		// tdl 默认允许重连 5 分钟。遇上把 MTProto 掐掉的节点，它会在这 5 分钟里
+		// 反复重连、速度始终为 0——握手是通的，所以它认为"还能救"。压到 60 秒，
+		// 让它自己放弃并把错误抛出来，配合看门狗一起兜住这种死循环。
+		"--reconnect-timeout", "60s",
 	}
 
 	var notes []string
-	// Telegram 必须走代理，且 tdl 只认 socks5://。系统代理一般是 http://，
-	// 本地混合端口（Clash 之类）两种协议都吃，换 scheme 即可。
-	if p := socksProxy(j.Proxy); p != "" {
-		args = append(args, "--proxy", p)
+	cmd := Command{Args: args}
+	// Telegram 必须走代理，而 tdl 不读 Windows 的"系统代理"设置，只能显式喂。
+	//
+	// 用 http:// 而不是 socks5://：Clash 这类混合端口两种协议都监听，但实测
+	// 走 socks5 时 tdl 经常卡在握手/传输上不动（gotd 的 socks 实现 + MTProto 长连接
+	// 不太对付），换成 http 代理立刻有速度。所以这里统一转成 http。
+	if p := httpProxy(j.Proxy); p != "" {
+		cmd.Args = append(cmd.Args, "--proxy", p)
+		// 再补一份环境变量：有些子命令/依赖库只认 env，不读 --proxy。
+		cmd.Env = proxyEnv(p)
 		notes = append(notes, "[HLSink] 使用代理 "+p)
 	}
-	return Command{Args: args, Notes: notes}, nil
+	cmd.Notes = notes
+	return cmd, nil
 }
 
 // ParseLine 解析 tdl 的进度行。
@@ -150,11 +162,23 @@ func stripANSI(s string) string {
 //   - 登录过但已被服务端作废。后一种很常见：用 -T desktop 导入桌面端 tdata 时，
 //     tdl 拿到的是桌面端那把 auth key 的副本，桌面端一启动就可能让这把 key 失效
 //     （Telegram 侧会把它当成同一设备），于是昨天还能下，今天就说未授权。
-func (tdlEngine) ExplainFailure(logPath string) (string, bool) {
-	if !logHasAny(logPath, "not authorized", "AUTH_KEY_UNREGISTERED", "unauthorized") {
-		return "", false
+func (tdlEngine) ExplainFailure(err error, logPath string) (string, bool) {
+	if logHasAny(logPath, "not authorized", "AUTH_KEY_UNREGISTERED", "unauthorized") {
+		return "Telegram 未登录或登录已失效：到设置页 tdl 那一行点「登录」扫二维码", true
 	}
-	return "Telegram 未登录或登录已失效：到设置页 tdl 那一行点「登录」扫二维码", true
+	// 连得上、但下载一直 0 速度：多半是机场把 MTProto 的数据传输掐了。
+	// 这种情况不能让它自己重连——tg 的握手是通的，重连一万次也还是没速度，
+	// 于是任务就卡死在 0%。看门狗会在 60 秒后杀掉它，这里负责把话说清楚。
+	if errors.Is(err, ErrStalled) {
+		return "和 Telegram 连上了，但下载一直没有速度：多半是节点掐断了 MTProto，" +
+			"换个节点（或换条线路）再试", true
+	}
+	// tdl 自己放弃了重连（--reconnect-timeout 到了）或者连接被重置。
+	if logHasAny(logPath, "reconnect", "connection reset", "broken pipe", "i/o timeout", "context deadline exceeded") {
+		return "和 Telegram 的连接反复中断：换个节点再试；" +
+			"如果一直这样，检查设置里的代理地址是不是当前在用的那个", true
+	}
+	return "", false
 }
 
 // LoginArgs 登录命令的参数。
@@ -164,7 +188,7 @@ func (tdlEngine) ExplainFailure(logPath string) (string, bool) {
 // 在 Telegram 的「设备」列表里单列一行，不会被动失效。
 func (tdlEngine) LoginArgs(proxy string) []string {
 	args := []string{"login", "-T", "qr"}
-	if p := socksProxy(proxy); p != "" {
+	if p := httpProxy(proxy); p != "" {
 		args = append(args, "--proxy", p)
 	}
 	return args
@@ -217,25 +241,46 @@ func tdlThreads(n int) int {
 	return n
 }
 
-// socksProxy 把任意代理地址改写成 socks5:// 形式。
+// httpProxy 把任意代理地址改写成 http:// 形式。
 //
-// tdl 的 --proxy 只接受 socks；而我们从注册表读到的系统代理通常是 http://。
-// 本地代理软件的混合端口两种协议都监听，所以换协议名就能用。
-func socksProxy(raw string) string {
+// 反过来（http → socks5）不要做：实测 tdl 走 socks5 会卡住，走 http 正常。
+func httpProxy(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return ""
+	}
+	// 没写协议就补 http://：直接 url.Parse("127.0.0.1:7890") 会把点分 IP
+	// 当成 scheme 解析失败（scheme 不能以数字开头），这里先补齐再解析。
+	if !strings.Contains(raw, "://") {
+		raw = "http://" + raw
 	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
 		return raw // 解析不了就原样交给 tdl，让它自己报错，别在这里吞掉
 	}
 	switch strings.ToLower(u.Scheme) {
-	case "socks5", "socks5h", "socks4":
+	case "http", "https":
 		return raw
 	default:
-		u.Scheme = "socks5"
+		// socks5 / socks5h / socks4 一律改写成 http：
+		// 本地混合端口两种协议都吃，用 http 才不卡。
+		u.Scheme = "http"
 		return u.String()
+	}
+}
+
+// proxyEnv 生成代理环境变量。
+//
+// tdl 的 --proxy 已经够用，但它的部分子路径（HTTP 客户端取消息、更新检查）
+// 走的是标准库，只认 env。两边都给，省得「下载能走、取文件信息不走」。
+func proxyEnv(p string) []string {
+	return []string{
+		"HTTP_PROXY=" + p,
+		"HTTPS_PROXY=" + p,
+		"ALL_PROXY=" + p,
+		"http_proxy=" + p,
+		"https_proxy=" + p,
+		"all_proxy=" + p,
 	}
 }
 

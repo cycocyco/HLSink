@@ -85,6 +85,10 @@ type Progress struct {
 type Command struct {
 	Exe  string
 	Args []string
+	// Env 是追加给子进程的环境变量（KEY=VALUE），会叠在 os.Environ() 之上。
+	// 有些工具只认环境变量、不认自己的命令行参数（tdl 就是），
+	// 从引擎这边声明比在编排层拼环境更清楚。
+	Env []string
 	// Notes 是需要写进运行日志的诊断行（不参与执行）。
 	// 引擎借此说明「我为了什么改了行为」，例如走了代理、跳过了某项自动处理，
 	// 而不必自己持有日志文件路径。由调用方统一写，格式保持一致。
@@ -137,9 +141,13 @@ type Transcoder interface {
 // 用户读到的是 github.com/gotd/td/telegram.(*Client).Run.func3，完全没有信息量。
 // 而引擎自己一眼就知道「该去登录」。让引擎说，编排层就不用按工具名写 if。
 type FailureExplainer interface {
-	// ExplainFailure 读本次运行的日志，返回一句能指导操作的话。
+	// ExplainFailure 拿到失败原因和本次运行的日志，返回一句能指导操作的话。
+	//
+	// 带上 err 是为了区分「同一种日志、不同性质的失败」：例如 tdl 连不上
+	// Telegram 和「连上了但一直 0 速度」在日志里都可能只有几行重连，
+	// 但该给用户的建议完全不同（换代理 vs 换节点）。
 	// ok=false 表示这条失败不归它管，交给默认处理。
-	ExplainFailure(logPath string) (msg string, ok bool)
+	ExplainFailure(err error, logPath string) (msg string, ok bool)
 }
 
 // TerminalLogin 是可选的：该引擎的登录必须在真终端里交互完成
