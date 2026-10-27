@@ -271,7 +271,7 @@ func normalizeTaskRequest(req *TaskRequest) (*taskInput, error) {
 	if raw := strings.TrimSpace(req.Kind); raw != "" {
 		k := engine.NormalizeKind(raw)
 		if !k.Known() {
-			return nil, fmt.Errorf("不支持的源格式: %s（仅支持 hls / dash / page）", raw)
+			return nil, fmt.Errorf("不支持的源格式: %s（仅支持 hls / dash / page / telegram）", raw)
 		}
 		kind = string(k)
 	}

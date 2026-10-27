@@ -72,18 +72,24 @@ func (p *Procs) KillAll() {
 type RunOpts struct {
 	Command
 	LogPath string        // 输出追加写入的日志文件
-	Idle    time.Duration // 连续这么久没有字节落地就杀掉进程；0 表示不监控
-	Probes  []string      // 用于判断进展的目录（按真实落盘字节统计）
-	Procs   *Procs        // 进程登记表，可为 nil
+	Idle    time.Duration // 连续这么久没有进展就杀掉进程；0 表示不监控
+	// Probes 是用于判断进展的目录（按真实落盘字节统计）。
+	//
+	// 留空表示「这个引擎的中间文件不可观测」，改为监视日志是否还在增长。
+	// tdl 就是这样：它把数据攒在内存里分块写，目录可能几十秒都是 0 字节，
+	// 但进度行每 100ms 刷一次。拿磁盘当判据会把正常下载误杀。
+	Probes []string
+	Procs  *Procs // 进程登记表，可为 nil
 }
 
 // Run 执行一条命令，输出追加写入日志。
 //
-// Idle > 0 且给出 Probes 时启用停滞看门狗：每 stallProbeInterval 采样这些
-// 目录的总字节数，连续 Idle 时长没有变化就杀掉进程并返回 ErrStalled。
+// 停滞看门狗每 stallProbeInterval 采样一次进展指标，连续 Idle 时长没有变化
+// 就杀掉进程并返回 ErrStalled。指标有两种，由 Probes 决定：
 //
-// 判据用磁盘上真实落地的字节，而不是解析控制台输出——RE 在解析清单、
-// 重试分片时都可能长时间不打印进度，看输出会误杀。
+//   - 给了 Probes：看这些目录的真实落盘字节。RE 在解析清单、重试分片时
+//     都可能长时间不打印进度，只有磁盘上的字节数才说明它真的在下。
+//   - 没给 Probes：看日志文件是否还在增长。适用于中间文件不可见的引擎。
 func Run(ctx context.Context, o RunOpts) error {
 	if err := ctx.Err(); err != nil {
 		return ErrCancelled
@@ -116,7 +122,16 @@ func Run(ctx context.Context, o RunOpts) error {
 		stalled   bool
 		stalledMu sync.Mutex
 	)
-	if o.Idle > 0 && len(o.Probes) > 0 {
+	// 选一个进展指标：优先磁盘字节，其次日志增长。
+	progress := func() int64 { return dirBytes(o.Probes...) }
+	if len(o.Probes) == 0 {
+		if o.LogPath == "" {
+			progress = nil // 两者都没有，无法判断，干脆不监控
+		} else {
+			progress = func() int64 { return fileSize(o.LogPath) }
+		}
+	}
+	if o.Idle > 0 && progress != nil {
 		stopWatch = make(chan struct{})
 		watchDone = make(chan struct{})
 		go func() {
@@ -124,7 +139,7 @@ func Run(ctx context.Context, o RunOpts) error {
 			ticker := time.NewTicker(stallProbeInterval)
 			defer ticker.Stop()
 
-			last := dirBytes(o.Probes...)
+			last := progress()
 			lastMove := time.Now()
 			for {
 				select {
@@ -132,9 +147,9 @@ func Run(ctx context.Context, o RunOpts) error {
 					return
 				case <-ticker.C:
 				}
-				cur := dirBytes(o.Probes...)
+				cur := progress()
 				if cur != last {
-					// 字节数变化（含分片被清理导致的减少）都算在动。
+					// 指标变化（含分片被清理导致的减少）都算在动。
 					last, lastMove = cur, time.Now()
 					continue
 				}
@@ -216,6 +231,15 @@ func dirBytes(dirs ...string) int64 {
 		})
 	}
 	return total
+}
+
+// fileSize 返回文件大小（不存在按 0 计）。
+func fileSize(path string) int64 {
+	st, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return st.Size()
 }
 
 // AppendLog 往日志追加一行诊断信息。

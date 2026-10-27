@@ -177,8 +177,10 @@ func safeBaseName(filename, title, taskID string) string {
 		if name == "" {
 			continue
 		}
-		if ext := strings.ToLower(filepath.Ext(name)); videoExts[ext] {
-			name = sanitizeName(strings.TrimSuffix(name, filepath.Ext(name)))
+		// 去掉扩展名，因为发布时会按产物的真实扩展名重新拼。
+		// 不能只认视频扩展名：Telegram 传来的文件名可能是 a.jpg / b.zip。
+		if ext := filepath.Ext(name); looksLikeExt(ext) {
+			name = sanitizeName(strings.TrimSuffix(name, ext))
 			if name == "" {
 				continue
 			}
@@ -194,6 +196,20 @@ func safeBaseName(filename, title, taskID string) string {
 		short = "unknown"
 	}
 	return "video_" + short
+}
+
+// looksLikeExt 判断后缀是否像个文件扩展名（.mp4 / .jpg / .7z），
+// 用来避免把「1.5倍速讲解」这种标题里的点当成扩展名切掉。
+func looksLikeExt(ext string) bool {
+	if len(ext) < 2 || len(ext) > 7 || ext[0] != '.' {
+		return false
+	}
+	for _, r := range ext[1:] {
+		if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') {
+			return false
+		}
+	}
+	return true
 }
 
 // exists 判断路径是否存在。
@@ -287,8 +303,10 @@ func publishFile(staged, saveDir, base string) (string, error) {
 	// 否则两个同名任务可能选中同一个目标并互相覆盖。
 	publishMu.Lock()
 	defer publishMu.Unlock()
+	// 保留产物的真实扩展名：Telegram 那边可能是 .jpg/.zip/.pdf，
+	// 一律改成 .mp4 会得到一个打不开的文件。
 	ext := strings.ToLower(filepath.Ext(staged))
-	if !videoExts[ext] {
+	if ext == "" || ext == ".tmp" || ext == ".part" {
 		ext = ".mp4"
 	}
 	name := uniqueName(saveDir, base, ext)
@@ -300,39 +318,49 @@ func publishFile(staged, saveDir, base string) (string, error) {
 }
 
 // findStaged 在任务 staging 目录内查找下载产物。
-// 只认「download.」前缀 + 视频扩展名的精确文件，且只在 staging 内找，绝不去保存目录扫描。
+//
+// 只认「download.」前缀的文件，且只在 staging 内找，绝不去保存目录扫描。
+// 两轮：先挑视频（HLS / 网页下载的都是一部片子），没有视频才退而求其次
+// 挑任意扩展名——Telegram 下出来的可能是 jpg / zip / pdf / apk。
 func findStaged(dir string) (string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return "", fmt.Errorf("读取任务下载目录失败: %w", err)
 	}
-	best := ""
-	var bestSize int64 = -1
+	bestAny, bestVideo := "", ""
+	var sizeAny, sizeVideo int64 = -1, -1
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
 		}
-		name := e.Name()
-		if !strings.HasPrefix(strings.ToLower(name), "download.") {
+		name := strings.ToLower(e.Name())
+		if !strings.HasPrefix(name, "download.") {
 			continue
 		}
-		ext := strings.ToLower(filepath.Ext(name))
-		if !videoExts[ext] {
+		ext := filepath.Ext(name)
+		// 中间态文件不算产物：tdl 在下载中会写 xxx.tmp，命名规则也带 download. 前缀。
+		if ext == ".tmp" || ext == ".part" {
 			continue
 		}
-		info, err := e.Info()
-		if err != nil || info.Size() <= 0 {
+		info, ierr := e.Info()
+		if ierr != nil || info.Size() <= 0 {
 			continue
 		}
-		if info.Size() > bestSize {
-			best = filepath.Join(dir, name)
-			bestSize = info.Size()
+		size := info.Size()
+		if size > sizeAny {
+			bestAny, sizeAny = filepath.Join(dir, e.Name()), size
+		}
+		if videoExts[ext] && size > sizeVideo {
+			bestVideo, sizeVideo = filepath.Join(dir, e.Name()), size
 		}
 	}
-	if best == "" {
-		return "", fmt.Errorf("下载完成但 staging 目录内没有找到视频产物")
+	if bestVideo != "" {
+		return bestVideo, nil
 	}
-	return best, nil
+	if bestAny != "" {
+		return bestAny, nil
+	}
+	return "", fmt.Errorf("下载完成但 staging 目录内没有找到产物")
 }
 
 // clearStaged 清掉 staging 目录内上一轮引擎的产物（仅前缀 download. 的文件）。

@@ -147,6 +147,7 @@ func (a *App) toolMap() map[string]string {
 		engine.KeyRE:     s.REPath,
 		engine.KeyYtdlp:  s.YtdlpPath,
 		engine.KeyFFmpeg: s.FFmpegPath,
+		engine.KeyTdl:    s.TdlPath,
 	}
 }
 

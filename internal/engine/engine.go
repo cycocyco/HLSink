@@ -29,12 +29,17 @@ const (
 	KindHLS  Kind = "hls"  // HLS 清单（.m3u8）
 	KindDASH Kind = "dash" // DASH 清单（.mpd）
 	KindPage Kind = "page" // 网页地址或未知后缀，交给站点解析器
+
+	// KindTelegram 是 Telegram 消息链接（t.me/...）。它不是流媒体，
+	// 产物可能是一张图、一个压缩包、一段视频，扩展名事先不可知。
+	KindTelegram Kind = "telegram"
 )
 
 // 引擎 key 的规范值。配置项、日志、前端都引用这些常量，避免各处手写字符串拼错。
 const (
 	KeyRE     = "re"
 	KeyYtdlp  = "yt-dlp"
+	KeyTdl    = "tdl"
 	KeyFFmpeg = "ffmpeg"
 )
 
@@ -96,7 +101,8 @@ type Downloader interface {
 	Label() string
 	// Binary 是可执行文件名，用于路径解析（如 "N_m3u8DL-RE.exe"）。
 	Binary() string
-	// Priority 决定降级链顺序：小的先试。RE=10，yt-dlp=20。
+	// Priority 决定「列表里的展示顺序」，小的在前。
+	// 它不决定降级链——链是 Fallback() 串起来的，两者没有关系。
 	Priority() int
 	// CanHandle 认领某种源类型。
 	CanHandle(Kind) bool

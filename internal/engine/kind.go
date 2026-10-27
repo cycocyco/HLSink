@@ -17,6 +17,8 @@ func NormalizeKind(raw string) Kind {
 		return KindDASH
 	case "page", "web", "url":
 		return KindPage
+	case "telegram", "tg", "tdl":
+		return KindTelegram
 	default:
 		return ""
 	}
@@ -25,7 +27,7 @@ func NormalizeKind(raw string) Kind {
 // Known 判断是否是受支持的类型。
 func (k Kind) Known() bool {
 	switch k {
-	case KindHLS, KindDASH, KindPage:
+	case KindHLS, KindDASH, KindPage, KindTelegram:
 		return true
 	default:
 		return false
@@ -40,6 +42,11 @@ func DetectKind(rawURL string) Kind {
 	if err != nil || u.Host == "" {
 		return KindPage
 	}
+	// Telegram 消息链接先判：它的路径是 /频道名/消息ID，不带文件后缀，
+	// 落到下面会一律判成 page，从而被 yt-dlp 接走（它处理不了）。
+	if isTelegramHost(u.Host) {
+		return KindTelegram
+	}
 	path := strings.ToLower(u.Path)
 	switch {
 	case strings.HasSuffix(path, ".m3u8"), strings.HasSuffix(path, ".m3u"):
@@ -51,6 +58,19 @@ func DetectKind(rawURL string) Kind {
 	}
 }
 
+// isTelegramHost 判断是否是 Telegram 的消息链接域名。
+func isTelegramHost(host string) bool {
+	h := strings.ToLower(host)
+	if i := strings.LastIndex(h, ":"); i >= 0 {
+		h = h[:i]
+	}
+	switch h {
+	case "t.me", "telegram.me", "telegram.dog", "tx.me":
+		return true
+	}
+	return false
+}
+
 // Label 返回类型的中文展示名。
 func (k Kind) Label() string {
 	switch NormalizeKind(string(k)) {
@@ -58,6 +78,8 @@ func (k Kind) Label() string {
 		return "HLS"
 	case KindDASH:
 		return "DASH"
+	case KindTelegram:
+		return "Telegram"
 	default:
 		return "网页"
 	}

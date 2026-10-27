@@ -101,6 +101,7 @@ type Settings struct {
 	REPath        string `json:"rePath"`
 	YtdlpPath     string `json:"ytdlpPath"`
 	FFmpegPath    string `json:"ffmpegPath"`
+	TdlPath       string `json:"tdlPath"`
 }
 
 // App Wails 绑定的应用对象。
@@ -288,6 +289,7 @@ func (a *App) loadConfig() {
 	a.settings.REPath = strings.TrimSpace(s.REPath)
 	a.settings.YtdlpPath = strings.TrimSpace(s.YtdlpPath)
 	a.settings.FFmpegPath = strings.TrimSpace(s.FFmpegPath)
+	a.settings.TdlPath = strings.TrimSpace(s.TdlPath)
 	a.mu.Unlock()
 }
 
@@ -392,6 +394,7 @@ func (a *App) SaveSettings(s Settings) (Settings, error) {
 	a.settings.REPath = strings.TrimSpace(s.REPath)
 	a.settings.YtdlpPath = strings.TrimSpace(s.YtdlpPath)
 	a.settings.FFmpegPath = strings.TrimSpace(s.FFmpegPath)
+	a.settings.TdlPath = strings.TrimSpace(s.TdlPath)
 	saved := a.settings
 	a.mu.Unlock()
 

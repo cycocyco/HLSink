@@ -44,7 +44,11 @@ func RegisterTranscoder(t Transcoder) {
 	regMu.Unlock()
 }
 
-// List 返回按优先级排好的下载引擎（即降级链顺序）。
+// List 返回全部已注册的下载引擎，按 Priority 排序。
+//
+// 注意：这个顺序只用于「设置页逐行展示」这类遍历，**不是降级链**。
+// 降级链完全由每个引擎的 Fallback() 决定：tdl 只认 Telegram 链接且
+// Fallback 为空，所以它永远不在 HLS / 网页那条链上。
 func List() []Downloader {
 	regMu.Lock()
 	defer regMu.Unlock()

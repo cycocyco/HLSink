@@ -104,7 +104,7 @@ const state = {
 };
 
 /** 默认设置：后端拿不到时兜底，避免空引用 */
-const DEFAULT_SETTINGS = { downloadDir: '', hevctTranscode: true, threadCount: 32, rePath: '', ytdlpPath: '', ffmpegPath: '' };
+const DEFAULT_SETTINGS = { downloadDir: '', hevctTranscode: true, threadCount: 32, rePath: '', ytdlpPath: '', ffmpegPath: '', tdlPath: '' };
 
 /** 任务状态 -> 中文文案 */
 const statusText = {
@@ -1050,6 +1050,7 @@ function renderSettings() {
   const reEl = /** @type {?HTMLInputElement} */ (document.getElementById('re-path'));
   const ytEl = /** @type {?HTMLInputElement} */ (document.getElementById('ytdlp-path'));
   const ffEl = /** @type {?HTMLInputElement} */ (document.getElementById('ffmpeg-path'));
+  const tdlEl = /** @type {?HTMLInputElement} */ (document.getElementById('tdl-path'));
   // 正在编辑时不覆盖输入框，避免打断用户输入
   if (dirEl && document.activeElement !== dirEl) dirEl.value = String(s.downloadDir || '');
   if (hevcEl) hevcEl.checked = !!s.hevctTranscode;
@@ -1059,6 +1060,7 @@ function renderSettings() {
   if (reEl && document.activeElement !== reEl) reEl.value = String(s.rePath || '');
   if (ytEl && document.activeElement !== ytEl) ytEl.value = String(s.ytdlpPath || '');
   if (ffEl && document.activeElement !== ffEl) ffEl.value = String(s.ffmpegPath || '');
+  if (tdlEl && document.activeElement !== tdlEl) tdlEl.value = String(s.tdlPath || '');
 }
 
 /**
@@ -1131,6 +1133,7 @@ async function applySettings(mutate) {
     rePath: String((state.settings || DEFAULT_SETTINGS).rePath || ''),
     ytdlpPath: String((state.settings || DEFAULT_SETTINGS).ytdlpPath || ''),
     ffmpegPath: String((state.settings || DEFAULT_SETTINGS).ffmpegPath || ''),
+    tdlPath: String((state.settings || DEFAULT_SETTINGS).tdlPath || ''),
   };
   const next = {
     downloadDir: prev.downloadDir,
@@ -1139,6 +1142,7 @@ async function applySettings(mutate) {
     rePath: prev.rePath,
     ytdlpPath: prev.ytdlpPath,
     ffmpegPath: prev.ffmpegPath,
+    tdlPath: prev.tdlPath,
   };
   mutate(next);
 
@@ -1152,6 +1156,7 @@ async function applySettings(mutate) {
       rePath: next.rePath,
       ytdlpPath: next.ytdlpPath,
       ffmpegPath: next.ffmpegPath,
+      tdlPath: next.tdlPath,
     });
     state.settings = saved && typeof saved === 'object' ? saved : next;
     // 保存即重新检测：路径填得对不对，这里立刻能看到
@@ -1269,11 +1274,11 @@ document.querySelectorAll('.filter').forEach((btn) => {
 });
 
 /* =========================================================================
- * 添加链接（网页地址 / DASH / HLS）
+ * 添加链接（网页地址 / DASH / HLS / Telegram）
  * ========================================================================= */
 
 /**
- * 调用后端的 AddTask（网页地址交给 yt-dlp 解析）。
+ * 调用后端的 AddTask。具体交给哪个引擎由后端按链接判断，前端不做分派。
  * @param {string} url
  * @param {string} [title]
  */
@@ -1285,7 +1290,7 @@ async function addTaskByURL(url, title) {
 async function openAddLinkDialog() {
   const value = await inputDialog({
     title: '添加链接',
-    message: '支持视频网页地址（交给 yt-dlp 解析）、DASH 的 .mpd 地址、HLS 的 .m3u8 地址。',
+    message: '支持视频网页地址（yt-dlp 解析）、.mpd / .m3u8 流地址，以及 Telegram 消息链接（t.me/频道/消息ID）。',
     placeholder: 'https://',
     confirmText: '添加',
     cancelText: '取消',
@@ -1351,6 +1356,7 @@ for (const [id, key] of [
   ['re-path', 'rePath'],
   ['ytdlp-path', 'ytdlpPath'],
   ['ffmpeg-path', 'ffmpegPath'],
+  ['tdl-path', 'tdlPath'],
 ]) {
   const el = /** @type {?HTMLInputElement} */ (document.getElementById(id));
   if (!el) continue;
@@ -1370,6 +1376,7 @@ for (const [btnId, key, label] of [
   ['pick-re', 'rePath', 'RE'],
   ['pick-ytdlp', 'ytdlpPath', 'yt-dlp'],
   ['pick-ffmpeg', 'ffmpegPath', 'ffmpeg'],
+  ['pick-tdl', 'tdlPath', 'tdl'],
 ]) {
   const btn = /** @type {?HTMLButtonElement} */ (document.getElementById(btnId));
   if (!btn) continue;
